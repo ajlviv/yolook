@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">YOLO Detector</string>
+    <string name="nav_live">Live</string>
+    <string name="nav_history">History</string>
+    <string name="nav_settings">Settings</string>
+    <string name="fab_snapshot">Take snapshot</string>
+    <string name="history_empty">No detections yet</string>
+    <string name="history_clear">Clear history</string>
+    <string name="settings_conf_threshold">Confidence threshold</string>
+    <string name="settings_iou_threshold">IoU threshold</string>
+    <string name="settings_max_objects">Max objects per frame</string>
+    <string name="settings_inference_fps">Inference FPS cap</string>
+    <string name="settings_gpu_delegate">Use GPU delegate</string>
+    <string name="settings_class_filter">Class filter</string>
+    <string name="settings_reset">Reset to defaults</string>
+    <string name="permission_rationale">Camera permission is required to run the live detector.</string>
+    <string name="snapshot_saved">Snapshot saved to gallery</string>
+    <string name="snapshot_failed">Failed to save snapshot</string>
+</resources>

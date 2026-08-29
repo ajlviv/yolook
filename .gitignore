@@ -1,0 +1,35 @@
+# Add local.properties (SDK path — machine-specific)
+local.properties
+
+# Gradle build outputs
+build/
+.gradle/
+app/build/
+
+# IDE files
+.idea/
+*.iml
+*.ipr
+*.iws
+.DS_Store
+
+# Android Studio navigation editor
+app/src/main/res/navigation/
+
+# Keystore files
+*.jks
+*.keystore
+
+# Generated files
+gen/
+
+# Lint
+lint/generated/
+lint/intermediates/
+lint/outputs/
+lint/tmp/
+
+# Log files
+*.log
+
+.agents/

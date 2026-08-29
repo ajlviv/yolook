@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Dark tactical theme matching MilTech aesthetic -->
+    <style name="Theme.YoloDetector" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#212121</item>
+        <item name="colorPrimaryVariant">#000000</item>
+        <item name="colorOnPrimary">#FFFFFF</item>
+        <item name="colorSecondary">#00E676</item>
+        <item name="colorSecondaryVariant">#00B248</item>
+        <item name="colorOnSecondary">#000000</item>
+        <item name="android:statusBarColor">#000000</item>
+        <item name="android:navigationBarColor">#121212</item>
+        <item name="android:windowBackground">#000000</item>
+    </style>
+</resources>
