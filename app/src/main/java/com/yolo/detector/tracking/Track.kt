@@ -90,11 +90,17 @@ class Track(
         val top    = (cy - h / 2f).coerceIn(0f, 1f)
         val right  = (cx + w / 2f).coerceIn(0f, 1f)
         val bottom = (cy + h / 2f).coerceIn(0f, 1f)
+        val box = RectF().apply {
+            this.left = left
+            this.top = top
+            this.right = right
+            this.bottom = bottom
+        }
         return Detection(
             trackId = trackId,
             classId = classId,
             confidence = 1f,  // confidence is replaced by tracker state; always show confirmed tracks
-            bbox = RectF(left, top, right, bottom),
+            bbox = box,
             timestampMs = timestampMs,
         )
     }

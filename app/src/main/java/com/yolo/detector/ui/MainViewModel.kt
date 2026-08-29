@@ -9,6 +9,7 @@ import android.provider.MediaStore
 import android.widget.Toast
 import androidx.camera.view.PreviewView
 import androidx.lifecycle.*
+import com.yolo.detector.R
 import com.yolo.detector.camera.CameraManager
 import com.yolo.detector.data.*
 import com.yolo.detector.inference.TfliteDetector

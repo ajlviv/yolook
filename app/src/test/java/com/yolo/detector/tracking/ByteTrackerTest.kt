@@ -8,10 +8,19 @@ import org.junit.Test
 
 class ByteTrackerTest {
 
+    private fun createBox(l: Float, t: Float, r: Float, b: Float): RectF {
+        return RectF().apply {
+            left = l
+            top = t
+            right = r
+            bottom = b
+        }
+    }
+
     @Test
     fun testTrackConfirmationAfterMinHits() {
         val tracker = ByteTracker()
-        val box = RectF(0.1f, 0.1f, 0.3f, 0.3f)
+        val box = createBox(0.1f, 0.1f, 0.3f, 0.3f)
 
         val det1 = listOf(Detection(-1, 2, 0.9f, box, 100L))
         val res1 = tracker.update(det1, 100L)
@@ -32,8 +41,8 @@ class ByteTrackerTest {
     @Test
     fun testTrackTrackingContinuity() {
         val tracker = ByteTracker()
-        val box1 = RectF(0.1f, 0.1f, 0.3f, 0.3f)
-        val box2 = RectF(0.12f, 0.12f, 0.32f, 0.32f)
+        val box1 = createBox(0.1f, 0.1f, 0.3f, 0.3f)
+        val box2 = createBox(0.12f, 0.12f, 0.32f, 0.32f)
 
         tracker.update(listOf(Detection(-1, 2, 0.9f, box1, 100L)), 100L)
         tracker.update(listOf(Detection(-1, 2, 0.9f, box1, 200L)), 200L)

@@ -1,5 +1,6 @@
 package com.yolo.detector.tracking
 
+import android.graphics.RectF
 import com.yolo.detector.data.Detection
 
 /**
@@ -55,7 +56,7 @@ class ByteTracker {
 
         // ── Step 2: Split detections by confidence ─────────────────────────────
         val highDets  = detections.filter { it.confidence >= HIGH_THRESH }
-        val lowDets   = detections.filter { it.confidence in LOW_THRESH until HIGH_THRESH }
+        val lowDets   = detections.filter { it.confidence >= LOW_THRESH && it.confidence < HIGH_THRESH }
 
         // ── Step 3: Stage 1 — high-confidence dets vs active tracks ───────────
         val (matchedHighIdx, unmatchedHighDets, unmatchedActiveTracks) =
@@ -131,7 +132,12 @@ class ByteTracker {
         val detBoxes = detections.map { it.bbox }
         val trackBoxes = tracks.map {
             val (cx, cy, w, h) = it.kalman.stateToBbox()
-            android.graphics.RectF(cx - w / 2f, cy - h / 2f, cx + w / 2f, cy + h / 2f)
+            RectF().apply {
+                left = cx - w / 2f
+                top = cy - h / 2f
+                right = cx + w / 2f
+                bottom = cy + h / 2f
+            }
         }
 
         val costMatrix = HungarianMatcher.iouCostMatrix(detBoxes, trackBoxes)

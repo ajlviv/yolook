@@ -37,6 +37,12 @@ android {
         viewBinding = true
     }
 
+    testOptions {
+        unitTests {
+            isReturnDefaultValues = true
+        }
+    }
+
     androidResources {
         // Prevent Gradle from double-compressing the TFLite model file.
         noCompress += "tflite"

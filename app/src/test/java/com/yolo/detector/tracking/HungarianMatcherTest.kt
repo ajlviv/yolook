@@ -38,10 +38,11 @@ class HungarianMatcherTest {
 
     @Test
     fun testIouCostMatrix() {
-        val boxA = listOf(RectF(0f, 0f, 0.5f, 0.5f))
-        val boxB = listOf(RectF(0f, 0f, 0.5f, 0.5f), RectF(0.6f, 0.6f, 1.0f, 1.0f))
+        val boxA = RectF().apply { left = 0f; top = 0f; right = 0.5f; bottom = 0.5f }
+        val boxB1 = RectF().apply { left = 0f; top = 0f; right = 0.5f; bottom = 0.5f }
+        val boxB2 = RectF().apply { left = 0.6f; top = 0.6f; right = 1.0f; bottom = 1.0f }
 
-        val cost = HungarianMatcher.iouCostMatrix(boxA, boxB)
+        val cost = HungarianMatcher.iouCostMatrix(listOf(boxA), listOf(boxB1, boxB2))
         assertEquals(1, cost.size)
         assertEquals(2, cost[0].size)
         assertEquals(0f, cost[0][0], 1e-4f) // identical box -> IoU=1 -> cost=0

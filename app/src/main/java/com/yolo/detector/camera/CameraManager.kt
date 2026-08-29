@@ -8,7 +8,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.yolo.detector.data.Detection
 import com.yolo.detector.data.InferenceSettings
-import com.yolo.detector.inference.BitmapUtils.toBitmap
+import com.yolo.detector.inference.toBitmap
 import com.yolo.detector.inference.TfliteDetector
 import com.yolo.detector.tracking.ByteTracker
 import kotlinx.coroutines.*

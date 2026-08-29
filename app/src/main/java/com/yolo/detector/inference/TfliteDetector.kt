@@ -65,8 +65,7 @@ class TfliteDetector(
         if (settings.enableGpuDelegate) {
             val compatList = CompatibilityList()
             if (compatList.isDelegateSupportedOnThisDevice) {
-                val delegateOptions = compatList.bestOptionsForThisDevice
-                gpuDelegate = GpuDelegate(delegateOptions)
+                gpuDelegate = GpuDelegate()
                 options.addDelegate(gpuDelegate!!)
             }
             // NNAPI and CPU fallback happen automatically if GPU delegate not added.

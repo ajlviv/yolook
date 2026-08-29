@@ -30,9 +30,14 @@ object HungarianMatcher {
         val numCols = costMatrix[0].size
         if (numCols == 0) return IntArray(numRows) { -1 }
 
-        // Pad to square
+        // Pad to square of dimension n
         val n = maxOf(numRows, numCols)
-        val cost = Array(n) { i -> FloatArray(n) { j -> costMatrix.getOrNull(i)?.getOrElse(j) { INF } ?: INF } }
+        // 1-based cost matrix: cost[1..n][1..n]
+        val cost = Array(n + 1) { i ->
+            FloatArray(n + 1) { j ->
+                if (i in 1..numRows && j in 1..numCols) costMatrix[i - 1][j - 1] else 0f
+            }
+        }
 
         // u[i] = potential for row i, v[j] = potential for column j
         val u = FloatArray(n + 1)
@@ -49,10 +54,10 @@ object HungarianMatcher {
                 used[j0] = true
                 val i0 = p[j0]
                 var delta = INF
-                var j1 = -1
+                var j1 = 0
                 for (j in 1..n) {
                     if (!used[j]) {
-                        val cur = cost[i0 - 1][j - 1] - u[i0] - v[j]
+                        val cur = cost[i0][j] - u[i0] - v[j]
                         if (cur < minDist[j]) {
                             minDist[j] = cur
                             way[j] = j0
@@ -84,8 +89,8 @@ object HungarianMatcher {
         val assignment = IntArray(numRows) { -1 }
         for (j in 1..numCols) {
             val row = p[j] - 1
-            if (row < numRows) {
-                val col = j - 1
+            val col = j - 1
+            if (row in 0 until numRows && col in 0 until numCols) {
                 if (costMatrix[row][col] <= threshold) {
                     assignment[row] = col
                 }
@@ -108,7 +113,7 @@ object HungarianMatcher {
         }
     }
 
-    private fun iou(a: RectF, b: RectF): Float {
+    fun iou(a: RectF, b: RectF): Float {
         val interLeft   = maxOf(a.left, b.left)
         val interTop    = maxOf(a.top, b.top)
         val interRight  = minOf(a.right, b.right)
