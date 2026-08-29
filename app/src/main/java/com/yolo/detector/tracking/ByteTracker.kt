@@ -62,7 +62,6 @@ class ByteTracker {
         val (matchedHighIdx, unmatchedHighDets, unmatchedActiveTracks) =
             associateDetectionsToTracks(highDets, activeTracks)
 
-        val matchedHighDetSet = matchedHighIdx.map { it.first }.toSet()
         val matchedHighTrackSet = matchedHighIdx.map { it.second }.toSet()
 
         for ((detIdx, trackIdx) in matchedHighIdx) {
@@ -74,7 +73,7 @@ class ByteTracker {
         val lostCandidates = unconfirmedTracks.filter { it.state == TrackState.LOST || it.state == TrackState.CONFIRMED }
 
         // ── Step 4: Stage 2 — low-confidence dets vs lost tracks ──────────────
-        val (matchedLowIdx, _, unmatchedLostTracks) =
+        val (matchedLowIdx, _, _) =
             associateDetectionsToTracks(lowDets, lostTracks + lostCandidates)
 
         for ((detIdx, trackIdx) in matchedLowIdx) {

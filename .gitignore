@@ -33,3 +33,4 @@ lint/tmp/
 *.log
 
 .agents/
+.vscode/

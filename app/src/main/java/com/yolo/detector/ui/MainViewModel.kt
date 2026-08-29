@@ -149,7 +149,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, contentValues)
             val success = uri != null && runCatching {
-                resolver.openOutputStream(uri!!)!!.use { out ->
+                resolver.openOutputStream(uri)?.use { out ->
                     bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
