@@ -12,10 +12,12 @@ import androidx.lifecycle.*
 import com.yolo.detector.R
 import com.yolo.detector.camera.CameraManager
 import com.yolo.detector.data.*
+import com.yolo.detector.inference.ModelAssets
 import com.yolo.detector.inference.TfliteDetector
 import com.yolo.detector.tracking.ByteTracker
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import java.io.FileNotFoundException
 
 /**
  * ViewModel that owns and coordinates the entire detection pipeline:
@@ -55,6 +57,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _statsFlow = MutableStateFlow(InferenceStats())
     val statsFlow: StateFlow<InferenceStats> = _statsFlow.asStateFlow()
 
+    private val _pipelineError = MutableStateFlow<String?>(null)
+    val pipelineError: StateFlow<String?> = _pipelineError.asStateFlow()
+
     val settingsFlow: Flow<InferenceSettings> = settingsRepo.settingsFlow
 
     // ── Settings → pipeline reactivity ────────────────────────────────────────
@@ -74,13 +79,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun recreateDetector(settings: InferenceSettings) {
         val old = detector
-        detector = TfliteDetector(getApplication(), settings)
+        val loaded = loadDetector(settings)
         old?.close()
 
-        // Recreate the camera manager with the new detector if already bound
+        if (!loaded) {
+            cameraManager?.shutdown()
+            cameraManager = null
+            return
+        }
+
         cameraManager?.let { mgr ->
             mgr.shutdown()
             cameraManager = CameraManager(getApplication(), settings, detector!!, tracker)
+        }
+    }
+
+    private fun loadDetector(settings: InferenceSettings): Boolean {
+        val app = getApplication<Application>()
+        if (!ModelAssets.isListed(app.assets.list(""))) {
+            detector = null
+            _pipelineError.value = app.getString(R.string.model_missing)
+            return false
+        }
+        return try {
+            detector = TfliteDetector(app, settings)
+            _pipelineError.value = null
+            true
+        } catch (e: FileNotFoundException) {
+            detector = null
+            _pipelineError.value = app.getString(R.string.model_missing)
+            false
+        } catch (e: Exception) {
+            detector = null
+            _pipelineError.value = app.getString(R.string.model_load_failed, e.message ?: e.javaClass.simpleName)
+            false
         }
     }
 
@@ -92,7 +124,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Must be called from the UI thread with a valid [LifecycleOwner].
      */
     fun bindCamera(lifecycleOwner: LifecycleOwner, previewView: PreviewView) {
-        val d = detector ?: TfliteDetector(getApplication(), currentSettings).also { detector = it }
+        val d = detector ?: run {
+            if (!loadDetector(currentSettings)) return
+            detector!!
+        }
         val mgr = CameraManager(getApplication(), currentSettings, d, tracker)
         cameraManager = mgr
 

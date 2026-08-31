@@ -17,4 +17,6 @@
     <string name="permission_rationale">Camera permission is required to run the live detector.</string>
     <string name="snapshot_saved">Snapshot saved to gallery</string>
     <string name="snapshot_failed">Failed to save snapshot</string>
+    <string name="model_missing">Missing yolov8m.tflite in app assets. Export the model and copy it to app/src/main/assets, then rebuild. See that folder\'s README.</string>
+    <string name="model_load_failed">Failed to load the detector model: %1$s</string>
 </resources>

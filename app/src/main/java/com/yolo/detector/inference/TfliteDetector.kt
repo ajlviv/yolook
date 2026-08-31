@@ -14,7 +14,6 @@ import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 
-private const val MODEL_FILE = "yolov8m.tflite"
 private const val INPUT_SIZE = 640
 private const val NUM_BOXES = 8400
 private const val NUM_CLASSES = 80
@@ -52,7 +51,7 @@ class TfliteDetector(
     // ── Initialisation ────────────────────────────────────────────────────────
 
     private fun loadModelFile(context: Context): MappedByteBuffer {
-        val assetFd = context.assets.openFd(MODEL_FILE)
+        val assetFd = context.assets.openFd(ModelAssets.FILE_NAME)
         return assetFd.createInputStream().channel.map(
             FileChannel.MapMode.READ_ONLY,
             assetFd.startOffset,

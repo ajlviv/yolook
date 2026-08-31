@@ -60,6 +60,18 @@ class LiveFragment : Fragment() {
                                 "Objects: ${stats.objectCount}"
                     }
                 }
+                launch {
+                    viewModel.pipelineError.collect { error ->
+                        if (error == null) {
+                            binding.tvModelError.visibility = View.GONE
+                            binding.fabSnapshot.isEnabled = true
+                        } else {
+                            binding.tvModelError.visibility = View.VISIBLE
+                            binding.tvModelError.text = error
+                            binding.fabSnapshot.isEnabled = false
+                        }
+                    }
+                }
             }
         }
     }
