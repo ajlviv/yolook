@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">WhatIsIt</string>
+    <string name="app_name">YOLook</string>
     <string name="nav_live">Live</string>
     <string name="nav_history">History</string>
     <string name="nav_settings">Settings</string>

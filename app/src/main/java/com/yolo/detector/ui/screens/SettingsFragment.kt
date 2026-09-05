@@ -8,6 +8,7 @@ import android.widget.CheckBox
 import android.widget.LinearLayout
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import com.yolo.detector.R
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -52,11 +53,12 @@ class SettingsFragment : Fragment() {
     }
 
     private fun displayAppVersion() {
+        val appName = getString(R.string.app_name)
         val versionText = try {
             val pInfo = requireContext().packageManager.getPackageInfo(requireContext().packageName, 0)
-            "WhatIsIt v${pInfo.versionName} (Build ${pInfo.versionCode})"
+            "$appName v${pInfo.versionName} (Build ${pInfo.versionCode})"
         } catch (e: Exception) {
-            "WhatIsIt v1.0"
+            "$appName v1.0"
         }
         binding.tvAppVersion.text = versionText
     }
