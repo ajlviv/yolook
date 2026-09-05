@@ -54,9 +54,9 @@ class SettingsFragment : Fragment() {
     private fun displayAppVersion() {
         val versionText = try {
             val pInfo = requireContext().packageManager.getPackageInfo(requireContext().packageName, 0)
-            "YOLO Detector v${pInfo.versionName} (Build ${pInfo.versionCode})"
+            "WhatIsIt v${pInfo.versionName} (Build ${pInfo.versionCode})"
         } catch (e: Exception) {
-            "YOLO Detector v1.0"
+            "WhatIsIt v1.0"
         }
         binding.tvAppVersion.text = versionText
     }
