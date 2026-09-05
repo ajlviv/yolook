@@ -48,10 +48,14 @@ class TfliteDetector(
     private val outputBuffer: ByteBuffer
     private val outputFloatBuffer: java.nio.FloatBuffer
 
+    // Precomputed float normalization lookup table (0..255 -> 0.0f..1.0f)
+    private val normTable = FloatArray(256) { it / 255f }
+
     // Preallocated buffers to eliminate GC churn and direct ByteBuffer native memory leaks
     private val inputBuffer: ByteBuffer = ByteBuffer
         .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * 3 * 4)
         .apply { order(ByteOrder.nativeOrder()) }
+    private val inputFloatBuffer: java.nio.FloatBuffer = inputBuffer.asFloatBuffer()
     private val scaledPixels = IntArray(INPUT_SIZE * INPUT_SIZE)
 
     init {
@@ -104,7 +108,8 @@ class TfliteDetector(
                 gpuDelegate = null
             }
         }
-        options.setNumThreads(4)
+        val availableCores = Runtime.getRuntime().availableProcessors()
+        options.setNumThreads(availableCores.coerceIn(4, 8))
         return options
     }
 
@@ -120,7 +125,7 @@ class TfliteDetector(
         val scaled = if (bitmap.width == INPUT_SIZE && bitmap.height == INPUT_SIZE) {
             bitmap
         } else {
-            Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true)
+            Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, false)
         }
 
         scaled.getPixels(scaledPixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
@@ -128,25 +133,29 @@ class TfliteDetector(
             scaled.recycle()
         }
 
-        inputBuffer.rewind()
+        inputFloatBuffer.rewind()
+        val norm = normTable
         if (isInputChannelsFirst) {
             // NCHW format: RRR... GGG... BBB...
-            for (pixel in scaledPixels) {
-                inputBuffer.putFloat(((pixel shr 16) and 0xFF) / 255f)
+            val planeSize = INPUT_SIZE * INPUT_SIZE
+            val floatArr = FloatArray(planeSize * 3)
+            for (i in 0 until planeSize) {
+                val pixel = scaledPixels[i]
+                floatArr[i] = norm[(pixel shr 16) and 0xFF]
+                floatArr[planeSize + i] = norm[(pixel shr 8) and 0xFF]
+                floatArr[planeSize * 2 + i] = norm[pixel and 0xFF]
             }
-            for (pixel in scaledPixels) {
-                inputBuffer.putFloat(((pixel shr 8) and 0xFF) / 255f)
-            }
-            for (pixel in scaledPixels) {
-                inputBuffer.putFloat((pixel and 0xFF) / 255f)
-            }
+            inputFloatBuffer.put(floatArr)
         } else {
             // NHWC format: RGB RGB RGB...
+            val floatArr = FloatArray(INPUT_SIZE * INPUT_SIZE * 3)
+            var idx = 0
             for (pixel in scaledPixels) {
-                inputBuffer.putFloat(((pixel shr 16) and 0xFF) / 255f)
-                inputBuffer.putFloat(((pixel shr  8) and 0xFF) / 255f)
-                inputBuffer.putFloat(( pixel         and 0xFF) / 255f)
+                floatArr[idx++] = norm[(pixel shr 16) and 0xFF]
+                floatArr[idx++] = norm[(pixel shr 8) and 0xFF]
+                floatArr[idx++] = norm[pixel and 0xFF]
             }
+            inputFloatBuffer.put(floatArr)
         }
         inputBuffer.rewind()
 
@@ -161,50 +170,68 @@ class TfliteDetector(
     // ── Output parsing ────────────────────────────────────────────────────────
 
     private fun parseOutput(timestampMs: Long): List<Detection> {
-        val candidates = mutableListOf<Detection>()
+        val candidates = ArrayList<Detection>(64)
+        val confThreshold = settings.confidenceThreshold
+        val activeFilter = settings.classFilter.toIntArray()
+        val totalBoxes = numBoxes
+        val totalClasses = numClasses
 
-        for (boxIdx in 0 until numBoxes) {
+        for (boxIdx in 0 until totalBoxes) {
+            // Find best class first before doing coordinate math
+            var bestClassId = -1
+            var bestScore = confThreshold
+
+            if (isChannelsFirst) {
+                for (cls in activeFilter) {
+                    if (cls >= totalClasses) continue
+                    val score = outputFloatBuffer.get((4 + cls) * totalBoxes + boxIdx)
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestClassId = cls
+                    }
+                }
+            } else {
+                val boxOffset = boxIdx * (totalClasses + 4)
+                for (cls in activeFilter) {
+                    if (cls >= totalClasses) continue
+                    val score = outputFloatBuffer.get(boxOffset + 4 + cls)
+                    if (score > bestScore) {
+                        bestScore = score
+                        bestClassId = cls
+                    }
+                }
+            }
+
+            if (bestClassId == -1) continue
+
             val cx: Float
             val cy: Float
             val w: Float
             val h: Float
-
             if (isChannelsFirst) {
-                cx = outputFloatBuffer.get(0 * numBoxes + boxIdx)
-                cy = outputFloatBuffer.get(1 * numBoxes + boxIdx)
-                w  = outputFloatBuffer.get(2 * numBoxes + boxIdx)
-                h  = outputFloatBuffer.get(3 * numBoxes + boxIdx)
+                cx = outputFloatBuffer.get(0 * totalBoxes + boxIdx)
+                cy = outputFloatBuffer.get(1 * totalBoxes + boxIdx)
+                w  = outputFloatBuffer.get(2 * totalBoxes + boxIdx)
+                h  = outputFloatBuffer.get(3 * totalBoxes + boxIdx)
             } else {
-                val boxOffset = boxIdx * (numClasses + 4)
+                val boxOffset = boxIdx * (totalClasses + 4)
                 cx = outputFloatBuffer.get(boxOffset + 0)
                 cy = outputFloatBuffer.get(boxOffset + 1)
                 w  = outputFloatBuffer.get(boxOffset + 2)
                 h  = outputFloatBuffer.get(boxOffset + 3)
             }
 
-            // Find best class among enabled filters
-            var bestClassId = -1
-            var bestScore = settings.confidenceThreshold
-            for (cls in settings.classFilter) {
-                if (cls >= numClasses) continue
-                val score = if (isChannelsFirst) {
-                    outputFloatBuffer.get((4 + cls) * numBoxes + boxIdx)
-                } else {
-                    outputFloatBuffer.get(boxIdx * (numClasses + 4) + 4 + cls)
-                }
-                if (score > bestScore) {
-                    bestScore = score
-                    bestClassId = cls
-                }
-            }
-            if (bestClassId == -1) continue
-
             // Auto-detect whether output box coordinates are normalized [0, 1] or raw pixels [0, 640]
             val scale = if (cx > 1.5f || cy > 1.5f || w > 1.5f || h > 1.5f) INPUT_SIZE.toFloat() else 1.0f
-            val left   = minOf((cx - w / 2f) / scale, (cx + w / 2f) / scale).coerceIn(0f, 1f)
-            val top    = minOf((cy - h / 2f) / scale, (cy + h / 2f) / scale).coerceIn(0f, 1f)
-            val right  = maxOf((cx - w / 2f) / scale, (cx + w / 2f) / scale).coerceIn(0f, 1f)
-            val bottom = maxOf((cy - h / 2f) / scale, (cy + h / 2f) / scale).coerceIn(0f, 1f)
+            val halfW = (w / 2f) / scale
+            val halfH = (h / 2f) / scale
+            val normCx = cx / scale
+            val normCy = cy / scale
+
+            val left   = (normCx - halfW).coerceIn(0f, 1f)
+            val top    = (normCy - halfH).coerceIn(0f, 1f)
+            val right  = (normCx + halfW).coerceIn(0f, 1f)
+            val bottom = (normCy + halfH).coerceIn(0f, 1f)
 
             candidates.add(
                 Detection(

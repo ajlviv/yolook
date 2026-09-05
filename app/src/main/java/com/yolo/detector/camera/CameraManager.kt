@@ -81,7 +81,7 @@ class CameraManager(
             val resolutionSelector = androidx.camera.core.resolutionselector.ResolutionSelector.Builder()
                 .setResolutionStrategy(
                     androidx.camera.core.resolutionselector.ResolutionStrategy(
-                        android.util.Size(1280, 720),
+                        android.util.Size(1280, 720), 
                         androidx.camera.core.resolutionselector.ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
                     )
                 )
