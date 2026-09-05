@@ -40,6 +40,15 @@ class LiveFragment : Fragment() {
         // Bind camera to this fragment's lifecycle; preview goes into the PreviewView.
         viewModel.bindCamera(viewLifecycleOwner, binding.previewView)
 
+        // Adjust tvStats margin/padding for system status bar / notch
+        androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(binding.tvStats) { v, insets ->
+            val statusBars = insets.getInsets(androidx.core.view.WindowInsetsCompat.Type.statusBars() or androidx.core.view.WindowInsetsCompat.Type.displayCutout())
+            val lp = v.layoutParams as? android.view.ViewGroup.MarginLayoutParams
+            lp?.topMargin = statusBars.top + (16 * resources.displayMetrics.density).toInt()
+            v.layoutParams = lp
+            insets
+        }
+
         // FAB: capture current overlay and save snapshot
         binding.fabSnapshot.setOnClickListener {
             captureAndSaveSnapshot()
