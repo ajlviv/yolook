@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Bounding-box corner brackets -->
+    <group>
+        <!-- top-left -->
+        <path
+            android:pathData="M32,47 L32,32 L47,32"
+            android:strokeColor="#00E676"
+            android:strokeWidth="5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:fillColor="#00000000" />
+        <!-- top-right -->
+        <path
+            android:pathData="M76,47 L76,32 L61,32"
+            android:strokeColor="#00E676"
+            android:strokeWidth="5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:fillColor="#00000000" />
+        <!-- bottom-left -->
+        <path
+            android:pathData="M32,61 L32,76 L47,76"
+            android:strokeColor="#00E676"
+            android:strokeWidth="5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:fillColor="#00000000" />
+        <!-- bottom-right -->
+        <path
+            android:pathData="M76,61 L76,76 L61,76"
+            android:strokeColor="#00E676"
+            android:strokeWidth="5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:fillColor="#00000000" />
+    </group>
+
+    <!-- Targeting ring (target/iris) -->
+    <path
+        android:pathData="M54,38 A16,16 0 1,1 53.9,38"
+        android:strokeColor="#00E676"
+        android:strokeWidth="3.5"
+        android:fillColor="#00000000" />
+
+    <!-- Crosshair lines -->
+    <path
+        android:pathData="M40,54 L68,54"
+        android:strokeColor="#00E676"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M54,40 L54,68"
+        android:strokeColor="#00E676"
+        android:strokeWidth="3.5"
+        android:strokeLineCap="round" />
+
+    <!-- Central pupil, drawn on top to occlude the crosshair intersection -->
+    <path
+        android:pathData="M54,54 m-5,0 a5,5 0 1,1 10,0 a5,5 0 1,1 -10,0"
+        android:fillColor="#00E676" />
+</vector>
