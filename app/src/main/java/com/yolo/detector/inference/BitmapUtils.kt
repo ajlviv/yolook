@@ -1,30 +1,50 @@
 package com.yolo.detector.inference
 
 import android.graphics.Bitmap
-import android.graphics.ImageFormat
 import android.graphics.Matrix
-import android.graphics.Rect
-import android.graphics.YuvImage
 import androidx.camera.core.ImageProxy
-import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
  * Converts a CameraX [ImageProxy] (YUV_420_888) to an RGB [Bitmap].
  *
- * The returned bitmap is in ARGB_8888 format and is rotated to match the
- * display orientation using [ImageProxy.imageInfo.rotationDegrees].
+ * Performs direct YUV→ARGB conversion without JPEG encoding/decoding,
+ * reducing memory allocations and avoiding quality loss.
  */
 fun ImageProxy.toBitmap(): Bitmap {
-    val yuvBytes = yuv420ToNv21()
-    val yuvImage = YuvImage(yuvBytes, ImageFormat.NV21, width, height, null)
+    val yBuffer = planes[0].buffer
+    val uBuffer = planes[1].buffer
+    val vBuffer = planes[2].buffer
 
-    val out = ByteArrayOutputStream()
-    yuvImage.compressToJpeg(Rect(0, 0, width, height), 90, out)
-    val jpegBytes = out.toByteArray()
+    val yRowStride = planes[0].rowStride
+    val uvRowStride = planes[1].rowStride
+    val uvPixelStride = planes[1].pixelStride
 
-    val raw = android.graphics.BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+    val w = width
+    val h = height
+    val argb = IntArray(w * h)
+
+    for (row in 0 until h) {
+        for (col in 0 until w) {
+            val yIndex = row * yRowStride + col
+            val y = (yBuffer.get(yIndex).toInt() and 0xFF) - 16
+
+            val uvRow = row shr 1
+            val uvCol = col shr 1
+            val uvIndex = uvRow * uvRowStride + uvCol * uvPixelStride
+            val u = (uBuffer.get(uvIndex).toInt() and 0xFF) - 128
+            val v = (vBuffer.get(uvIndex).toInt() and 0xFF) - 128
+
+            val r = (1.164 * y + 1.596 * v).toInt().coerceIn(0, 255)
+            val g = (1.164 * y - 0.392 * u - 0.813 * v).toInt().coerceIn(0, 255)
+            val b = (1.164 * y + 2.017 * u).toInt().coerceIn(0, 255)
+
+            argb[row * w + col] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
+        }
+    }
+
+    val raw = Bitmap.createBitmap(argb, w, h, Bitmap.Config.ARGB_8888)
 
     val rotationDegrees = imageInfo.rotationDegrees
     return if (rotationDegrees != 0) {
@@ -35,29 +55,6 @@ fun ImageProxy.toBitmap(): Bitmap {
     } else {
         raw
     }
-}
-
-/**
- * Converts the YUV_420_888 planes of this [ImageProxy] to NV21 byte array
- * suitable for [YuvImage].
- */
-private fun ImageProxy.yuv420ToNv21(): ByteArray {
-    val yPlane  = planes[0]
-    val uPlane  = planes[1]
-    val vPlane  = planes[2]
-
-    val ySize = yPlane.buffer.remaining()
-    val uSize = uPlane.buffer.remaining()
-    val vSize = vPlane.buffer.remaining()
-
-    val nv21 = ByteArray(ySize + uSize + vSize)
-
-    yPlane.buffer.get(nv21, 0, ySize)
-    // CameraX gives U and V planes separately; NV21 needs V then U interleaved
-    vPlane.buffer.get(nv21, ySize, vSize)
-    uPlane.buffer.get(nv21, ySize + vSize, uSize)
-
-    return nv21
 }
 
 /**
@@ -73,7 +70,7 @@ fun Bitmap.toByteBuffer(inputSize: Int): ByteBuffer {
     val scaled = Bitmap.createScaledBitmap(this, inputSize, inputSize, true)
 
     val buffer = ByteBuffer
-        .allocateDirect(1 * inputSize * inputSize * 3 * 4) // FLOAT32 = 4 bytes
+        .allocateDirect(1 * inputSize * inputSize * 3 * 4)
         .apply { order(ByteOrder.nativeOrder()) }
 
     val pixels = IntArray(inputSize * inputSize)
@@ -81,9 +78,9 @@ fun Bitmap.toByteBuffer(inputSize: Int): ByteBuffer {
     if (scaled !== this) scaled.recycle()
 
     for (pixel in pixels) {
-        buffer.putFloat(((pixel shr 16) and 0xFF) / 255f) // R
-        buffer.putFloat(((pixel shr  8) and 0xFF) / 255f) // G
-        buffer.putFloat(( pixel         and 0xFF) / 255f) // B
+        buffer.putFloat(((pixel shr 16) and 0xFF) / 255f)
+        buffer.putFloat(((pixel shr  8) and 0xFF) / 255f)
+        buffer.putFloat(( pixel         and 0xFF) / 255f)
     }
 
     buffer.rewind()

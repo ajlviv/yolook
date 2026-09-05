@@ -44,7 +44,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private var detector: TfliteDetector? = null
     private val tracker = ByteTracker()
-    private var cameraManager: CameraManager? = null
+
+    /** The manager currently bound to a camera lifecycle, or null if none. */
+    private val activeManager = MutableStateFlow<CameraManager?>(null)
+    private var cameraManager: CameraManager?
+        get() = activeManager.value
+        set(value) { activeManager.value = value }
 
     // ── Exposed flows ──────────────────────────────────────────────────────────
 
@@ -60,6 +65,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _pipelineError = MutableStateFlow<String?>(null)
     val pipelineError: StateFlow<String?> = _pipelineError.asStateFlow()
 
+    private val _cameraError = MutableStateFlow<String?>(null)
+    val cameraError: StateFlow<String?> = _cameraError.asStateFlow()
+
     val settingsFlow: Flow<InferenceSettings> = settingsRepo.settingsFlow
 
     // ── Settings → pipeline reactivity ────────────────────────────────────────
@@ -68,29 +76,84 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastFrameMs: Long = 0L
     private var smoothedFps: Float = 0f
 
+    private var boundLifecycleOwner: LifecycleOwner? = null
+    private var boundPreviewView: PreviewView? = null
+
     init {
         viewModelScope.launch {
-            settingsRepo.settingsFlow.collect { settings ->
-                currentSettings = settings
-                recreateDetector(settings)
+            settingsRepo.settingsFlow.collect { newSettings ->
+                val oldSettings = currentSettings
+                currentSettings = newSettings
+
+                if (detector == null) {
+                    loadDetector(newSettings)
+                } else if (oldSettings.enableGpuDelegate != newSettings.enableGpuDelegate) {
+                    recreateDetector(newSettings)
+                } else {
+                    // Update settings in-place without rebuilding TFLite interpreter or tearing down camera
+                    detector?.settings = newSettings
+                    cameraManager?.settings = newSettings
+                }
+            }
+        }
+
+        // Follow the active camera manager. When a new manager replaces an old one
+        // (e.g. after a settings change tears the pipeline down and rebinds), the
+        // detection/stats/error streams stay wired to whatever manager is current.
+        viewModelScope.launch {
+            activeManager.collectLatest { mgr ->
+                if (mgr == null) return@collectLatest
+                coroutineScope {
+                    launch { collectDetections(mgr) }
+                    launch { mgr.cameraError.collect { msg -> _cameraError.value = msg } }
+                }
             }
         }
     }
 
+    private suspend fun collectDetections(mgr: CameraManager) {
+        mgr.detectionFlow.collect { detections ->
+            _detectionFlow.value = detections
+            val updatedHistory = (_historyFlow.value + detections).takeLast(MAX_HISTORY)
+            _historyFlow.value = updatedHistory
+
+            val now = System.currentTimeMillis()
+            val elapsed = (now - lastFrameMs).coerceAtLeast(1L)
+            val instantFps = 1000f / elapsed
+            smoothedFps = FPS_ALPHA * instantFps + (1f - FPS_ALPHA) * smoothedFps
+            lastFrameMs = now
+            _statsFlow.value = InferenceStats(
+                fps = smoothedFps,
+                inferenceMs = mgr.inferenceTimeMs.value,
+                objectCount = detections.size,
+            )
+        }
+    }
+
     private fun recreateDetector(settings: InferenceSettings) {
+        // Stop in-flight inference against the current manager/detector first, so we
+        // never close an interpreter (or reset a tracker) while a frame is running.
+        val hadManager = cameraManager != null
+        cameraManager?.shutdown()
+        cameraManager = null
+
         val old = detector
         val loaded = loadDetector(settings)
         old?.close()
 
         if (!loaded) {
-            cameraManager?.shutdown()
-            cameraManager = null
             return
         }
 
-        cameraManager?.let { mgr ->
-            mgr.shutdown()
-            cameraManager = CameraManager(getApplication(), settings, detector!!, tracker)
+        // If a camera was bound to the old pipeline and lifecycle is active, rebind
+        val owner = boundLifecycleOwner
+        val view = boundPreviewView
+        if (hadManager && owner != null && view != null &&
+            owner.lifecycle.currentState.isAtLeast(Lifecycle.State.INITIALIZED)
+        ) {
+            val mgr = CameraManager(getApplication(), settings, detector!!, tracker)
+            cameraManager = mgr
+            mgr.bindCamera(owner, view)
         }
     }
 
@@ -124,35 +187,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Must be called from the UI thread with a valid [LifecycleOwner].
      */
     fun bindCamera(lifecycleOwner: LifecycleOwner, previewView: PreviewView) {
+        boundLifecycleOwner = lifecycleOwner
+        boundPreviewView = previewView
+
         val d = detector ?: run {
             if (!loadDetector(currentSettings)) return
             detector!!
         }
         val mgr = CameraManager(getApplication(), currentSettings, d, tracker)
         cameraManager = mgr
-
-        viewModelScope.launch {
-            mgr.detectionFlow.collect { detections ->
-                _detectionFlow.value = detections
-
-                // Append to history (bounded)
-                val updatedHistory = (_historyFlow.value + detections).takeLast(MAX_HISTORY)
-                _historyFlow.value = updatedHistory
-
-                // Update stats
-                val now = System.currentTimeMillis()
-                val elapsed = (now - lastFrameMs).coerceAtLeast(1L)
-                val instantFps = 1000f / elapsed
-                smoothedFps = FPS_ALPHA * instantFps + (1f - FPS_ALPHA) * smoothedFps
-                lastFrameMs = now
-
-                _statsFlow.value = InferenceStats(
-                    fps = smoothedFps,
-                    inferenceMs = mgr.inferenceTimeMs.value,
-                    objectCount = detections.size,
-                )
-            }
-        }
 
         mgr.bindCamera(lifecycleOwner, previewView)
     }

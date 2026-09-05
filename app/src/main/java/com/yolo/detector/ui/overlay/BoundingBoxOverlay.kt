@@ -65,6 +65,9 @@ class BoundingBoxOverlay @JvmOverloads constructor(
         val w = width.toFloat()
         val h = height.toFloat()
 
+        canvas.save()
+        canvas.clipRect(0f, 0f, w, h)
+
         for (det in detections) {
             val color = classColors[det.classId] ?: defaultColor
 
@@ -92,6 +95,8 @@ class BoundingBoxOverlay @JvmOverloads constructor(
             // ── Label text ─────────────────────────────────────────────────────
             canvas.drawText(label, left + 8f, labelTop + labelH - 6f, labelPaint)
         }
+
+        canvas.restore()
     }
 
     private fun buildLabel(det: Detection): String {

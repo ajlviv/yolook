@@ -15,6 +15,15 @@ class ValueSnapTest {
     }
 
     @Test
+    fun `regression - crash value 0_6866666 snaps onto grid`() {
+        val snapped = snapToStep(0.6866666f, 0.1f, 0.9f, 0.05f)
+        assertEquals(0.70f, snapped, eps)
+        // Must remain on-step so BaseSlider.validateValues does not throw.
+        val steps = (snapped - 0.1f) / 0.05f
+        assertEquals(steps.roundToInt().toFloat(), steps, 1e-4f)
+    }
+
+    @Test
     fun `already aligned values unchanged`() {
         assertEquals(0.40f, snapToStep(0.40f, 0.1f, 0.9f, 0.05f), eps)
         assertEquals(0.45f, snapToStep(0.45f, 0.1f, 0.9f, 0.05f), eps)

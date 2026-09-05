@@ -36,11 +36,18 @@ private const val NUM_CLASSES = 80
  */
 class TfliteDetector(
     context: Context,
-    private val settings: InferenceSettings,
+    @Volatile var settings: InferenceSettings,
 ) : Closeable {
 
     private val interpreter: Interpreter
     private var gpuDelegate: GpuDelegate? = null
+
+    // Preallocated buffers to eliminate GC churn and direct ByteBuffer native memory leaks
+    private val inputBuffer: ByteBuffer = ByteBuffer
+        .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * 3 * 4)
+        .apply { order(ByteOrder.nativeOrder()) }
+    private val scaledPixels = IntArray(INPUT_SIZE * INPUT_SIZE)
+    private val rawOutput = Array(1) { Array(NUM_CLASSES + 4) { FloatArray(NUM_BOXES) } }
 
     init {
         val model = loadModelFile(context)
@@ -82,10 +89,25 @@ class TfliteDetector(
      * @return List of [Detection] with trackId = -1 (untracked).
      */
     fun detect(bitmap: Bitmap): List<Detection> {
-        val inputBuffer = bitmap.toByteBuffer(INPUT_SIZE)
+        val scaled = if (bitmap.width == INPUT_SIZE && bitmap.height == INPUT_SIZE) {
+            bitmap
+        } else {
+            Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, true)
+        }
 
-        // Output tensor: [1, 84, 8400]
-        val rawOutput = Array(1) { Array(NUM_CLASSES + 4) { FloatArray(NUM_BOXES) } }
+        scaled.getPixels(scaledPixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+        if (scaled !== bitmap) {
+            scaled.recycle()
+        }
+
+        inputBuffer.rewind()
+        for (pixel in scaledPixels) {
+            inputBuffer.putFloat(((pixel shr 16) and 0xFF) / 255f)
+            inputBuffer.putFloat(((pixel shr  8) and 0xFF) / 255f)
+            inputBuffer.putFloat(( pixel         and 0xFF) / 255f)
+        }
+        inputBuffer.rewind()
+
         interpreter.run(inputBuffer, rawOutput)
 
         val timestampMs = System.currentTimeMillis()
@@ -134,10 +156,10 @@ class TfliteDetector(
             if (bestClassId == -1) continue
             if (bestClassId !in settings.classFilter) continue
 
-            val left   = (cx - w / 2f).coerceIn(0f, 1f)
-            val top    = (cy - h / 2f).coerceIn(0f, 1f)
-            val right  = (cx + w / 2f).coerceIn(0f, 1f)
-            val bottom = (cy + h / 2f).coerceIn(0f, 1f)
+            val left   = ((cx - w / 2f) / INPUT_SIZE).coerceIn(0f, 1f)
+            val top    = ((cy - h / 2f) / INPUT_SIZE).coerceIn(0f, 1f)
+            val right  = ((cx + w / 2f) / INPUT_SIZE).coerceIn(0f, 1f)
+            val bottom = ((cy + h / 2f) / INPUT_SIZE).coerceIn(0f, 1f)
 
             candidates.add(
                 Detection(

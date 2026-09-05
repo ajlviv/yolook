@@ -72,6 +72,14 @@ class LiveFragment : Fragment() {
                         }
                     }
                 }
+                launch {
+                    viewModel.cameraError.collect { error ->
+                        if (error != null) {
+                            binding.tvModelError.visibility = View.VISIBLE
+                            binding.tvModelError.text = "Camera error: $error"
+                        }
+                    }
+                }
             }
         }
     }

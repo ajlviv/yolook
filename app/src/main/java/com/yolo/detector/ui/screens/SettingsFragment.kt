@@ -15,6 +15,7 @@ import com.yolo.detector.data.COCO_LABELS
 import com.yolo.detector.data.VEHICLE_CLASS_IDS
 import com.yolo.detector.databinding.FragmentSettingsBinding
 import com.yolo.detector.ui.MainViewModel
+import com.yolo.detector.util.snapToStep
 import kotlinx.coroutines.launch
 
 /**
@@ -27,6 +28,10 @@ class SettingsFragment : Fragment() {
 
     private val viewModel: MainViewModel by activityViewModels()
     private val classCheckBoxes = mutableMapOf<Int, CheckBox>()
+
+    // Guards against the settings-flow re-sync re-triggering the checkbox
+    // change listener (which would call setClassFilter → re-emit → flicker loop).
+    private var syncingFromSettings = false
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -53,6 +58,7 @@ class SettingsFragment : Fragment() {
             val checkBox = CheckBox(requireContext()).apply {
                 text = "$label (id: $index)"
                 setOnCheckedChangeListener { _, _ ->
+                    if (syncingFromSettings) return@setOnCheckedChangeListener
                     val selectedIds = classCheckBoxes.filter { it.value.isChecked }.keys.toSet()
                     viewModel.setClassFilter(selectedIds)
                 }
@@ -63,17 +69,23 @@ class SettingsFragment : Fragment() {
     }
 
     private fun setupListeners() {
-        binding.sliderConfidence.addOnChangeListener { _, value, fromUser ->
+        binding.sliderConfidence.addOnChangeListener { slider, value, fromUser ->
             if (fromUser) {
-                binding.tvConfValue.text = "${(value * 100).toInt()}%"
-                viewModel.setConfidenceThreshold(value)
+                val snapped = snapToStep(value, 0.1f, 0.9f, 0.05f)
+                // Re-assign the snapped value back onto the slider so the transient
+                // off-grid drag value never reaches onDraw (BaseSlider.validateValues).
+                binding.sliderConfidence.value = snapped
+                binding.tvConfValue.text = "${(snapped * 100).toInt()}%"
+                viewModel.setConfidenceThreshold(snapped)
             }
         }
 
-        binding.sliderIou.addOnChangeListener { _, value, fromUser ->
+        binding.sliderIou.addOnChangeListener { slider, value, fromUser ->
             if (fromUser) {
-                binding.tvIouValue.text = "${(value * 100).toInt()}%"
-                viewModel.setIouThreshold(value)
+                val snapped = snapToStep(value, 0.1f, 0.9f, 0.05f)
+                binding.sliderIou.value = snapped
+                binding.tvIouValue.text = "${(snapped * 100).toInt()}%"
+                viewModel.setIouThreshold(snapped)
             }
         }
 
@@ -114,11 +126,13 @@ class SettingsFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.settingsFlow.collect { settings ->
-                    binding.sliderConfidence.value = settings.confidenceThreshold
-                    binding.tvConfValue.text = "${(settings.confidenceThreshold * 100).toInt()}%"
+                    val snappedConfidence = snapToStep(settings.confidenceThreshold, 0.1f, 0.9f, 0.05f)
+                    binding.sliderConfidence.value = snappedConfidence
+                    binding.tvConfValue.text = "${(snappedConfidence * 100).toInt()}%"
 
-                    binding.sliderIou.value = settings.iouThreshold
-                    binding.tvIouValue.text = "${(settings.iouThreshold * 100).toInt()}%"
+                    val snappedIou = snapToStep(settings.iouThreshold, 0.1f, 0.9f, 0.05f)
+                    binding.sliderIou.value = snappedIou
+                    binding.tvIouValue.text = "${(snappedIou * 100).toInt()}%"
 
                     binding.sliderMaxObjects.value = settings.maxObjects.toFloat()
                     binding.tvMaxObjectsValue.text = "${settings.maxObjects}"
@@ -128,9 +142,11 @@ class SettingsFragment : Fragment() {
 
                     binding.switchGpu.isChecked = settings.enableGpuDelegate
 
+                    syncingFromSettings = true
                     classCheckBoxes.forEach { (id, checkBox) ->
                         checkBox.isChecked = id in settings.classFilter
                     }
+                    syncingFromSettings = false
                 }
             }
         }

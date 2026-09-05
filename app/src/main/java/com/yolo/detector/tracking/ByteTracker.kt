@@ -23,10 +23,10 @@ class ByteTracker {
 
     companion object {
         /** High-confidence threshold for Stage 1 detections. */
-        const val HIGH_THRESH = 0.50f
+        const val HIGH_THRESH = 0.20f
 
         /** Low-confidence threshold for Stage 2 detections. */
-        const val LOW_THRESH = 0.10f
+        const val LOW_THRESH = 0.05f
 
         /** IoU cost threshold — pairs with cost > this are never matched (cost = 1 − IoU). */
         const val MATCH_THRESH = 0.70f   // i.e. IoU must be ≥ 0.30
@@ -48,7 +48,12 @@ class ByteTracker {
      * @param detections Raw detector output (trackId = -1) for the current frame.
      * @param timestampMs Frame timestamp for emitted detections.
      * @return CONFIRMED tracks, each with their assigned [Detection.trackId].
+     *
+     * Synchronized so that a concurrent [reset] (e.g. a camera-manager teardown on
+     * another thread while an inference frame is still being processed) cannot mutate
+     * [activeTracks]/[lostTracks] mid-iteration and throw ConcurrentModificationException.
      */
+    @Synchronized
     fun update(detections: List<Detection>, timestampMs: Long): List<Detection> {
         // ── Step 1: Predict all tracks ─────────────────────────────────────────
         activeTracks.forEach { it.predict() }
@@ -107,6 +112,7 @@ class ByteTracker {
     }
 
     /** Resets all tracking state. Call when the camera session restarts. */
+    @Synchronized
     fun reset() {
         activeTracks.clear()
         lostTracks.clear()

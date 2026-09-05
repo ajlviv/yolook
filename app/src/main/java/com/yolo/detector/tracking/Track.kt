@@ -44,6 +44,10 @@ class Track(
     /** The class ID this track was initialised with (does not change). */
     val classId: Int = initialDetection.classId
 
+    /** Most recent detection confidence score. */
+    var confidence: Float = initialDetection.confidence
+        private set
+
     init {
         val (cx, cy, w, h) = initialDetection.bbox.toCxCyWH()
         kalman.init(cx, cy, w, h)
@@ -66,6 +70,7 @@ class Track(
     fun update(detection: Detection) {
         val (cx, cy, w, h) = detection.bbox.toCxCyWH()
         kalman.update(cx, cy, w, h)
+        confidence = detection.confidence
         framesSinceUpdate = 0
         hits++
         if (state == TrackState.TENTATIVE && hits >= ByteTracker.MIN_HITS) {
@@ -99,7 +104,7 @@ class Track(
         return Detection(
             trackId = trackId,
             classId = classId,
-            confidence = 1f,  // confidence is replaced by tracker state; always show confirmed tracks
+            confidence = confidence,
             bbox = box,
             timestampMs = timestampMs,
         )

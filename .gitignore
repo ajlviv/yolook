@@ -34,3 +34,7 @@ lint/tmp/
 
 .agents/
 .vscode/
+
+*.tflite
+.kotlin/
+docs/
