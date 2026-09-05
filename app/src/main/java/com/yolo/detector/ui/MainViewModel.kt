@@ -137,10 +137,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         cameraManager?.shutdown()
         cameraManager = null
 
+        // Close old detector first to release GPU/EGL context before opening a new one
         val old = detector
-        val loaded = loadDetector(settings)
+        detector = null
         old?.close()
 
+        val loaded = loadDetector(settings)
         if (!loaded) {
             return
         }

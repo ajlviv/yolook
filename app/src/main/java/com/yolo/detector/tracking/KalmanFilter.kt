@@ -42,17 +42,17 @@ class KalmanFilter {
         FloatArray(stateDim) { j -> if (i == j) 1f else 0f }
     }
 
-    // Process noise covariance Q (diagonal, tuned for ~30 fps camera)
+    // Process noise covariance Q (diagonal, tuned for normalized coordinates in [0, 1])
     private val Q = Array(stateDim) { i ->
         FloatArray(stateDim) { j ->
             if (i != j) 0f
-            else if (i < obsDim) 1e-2f else 1e-5f
+            else if (i < obsDim) 1e-4f else 1e-3f
         }
     }
 
-    // Measurement noise covariance R (diagonal)
+    // Measurement noise covariance R (diagonal, tuned for normalized coordinates in [0, 1])
     private val R = Array(obsDim) { i ->
-        FloatArray(obsDim) { j -> if (i == j) 1e-1f else 0f }
+        FloatArray(obsDim) { j -> if (i == j) 1e-3f else 0f }
     }
 
     // ── Initialisation ────────────────────────────────────────────────────────
@@ -61,9 +61,11 @@ class KalmanFilter {
     fun init(cx: Float, cy: Float, w: Float, h: Float) {
         x[0] = cx; x[1] = cy; x[2] = w; x[3] = h
         x[4] = 0f; x[5] = 0f; x[6] = 0f; x[7] = 0f
-        // High initial uncertainty on velocity
+        // Realistic initial uncertainty for normalized [0, 1] coordinates
         for (i in 0 until stateDim) {
-            P[i][i] = if (i < obsDim) 1f else 1000f
+            for (j in 0 until stateDim) {
+                P[i][j] = if (i == j) (if (i < obsDim) 1e-2f else 1e-1f) else 0f
+            }
         }
     }
 
@@ -80,7 +82,8 @@ class KalmanFilter {
         val FPFt = mmMul(FP, transpose(F))
         for (i in 0 until stateDim) {
             for (j in 0 until stateDim) {
-                P[i][j] = FPFt[i][j] + Q[i][j]
+                val pVal = FPFt[i][j] + Q[i][j]
+                P[i][j] = if (i == j) pVal.coerceAtLeast(1e-6f) else pVal
             }
         }
     }
@@ -109,11 +112,16 @@ class KalmanFilter {
         val Ky = mvMul(K, y)
         for (i in 0 until stateDim) x[i] += Ky[i]
 
-        // Covariance update: P = (I - K * H) * P
+        // Covariance update: P = (I - K * H) * P (symmetrized)
         val KH = mmMul(K, H)
         val IKH = Array(stateDim) { i -> FloatArray(stateDim) { j -> (if (i == j) 1f else 0f) - KH[i][j] } }
         val newP = mmMul(IKH, P)
-        for (i in 0 until stateDim) P[i] = newP[i]
+        for (i in 0 until stateDim) {
+            for (j in 0 until stateDim) {
+                val sym = (newP[i][j] + newP[j][i]) / 2f
+                P[i][j] = if (i == j) sym.coerceAtLeast(1e-6f) else sym
+            }
+        }
     }
 
     // ── State access ──────────────────────────────────────────────────────────

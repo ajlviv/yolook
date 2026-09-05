@@ -45,9 +45,20 @@ class SettingsFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
+        displayAppVersion()
         setupClassFilterCheckboxes()
         setupListeners()
         observeSettings()
+    }
+
+    private fun displayAppVersion() {
+        val versionText = try {
+            val pInfo = requireContext().packageManager.getPackageInfo(requireContext().packageName, 0)
+            "YOLO Detector v${pInfo.versionName} (Build ${pInfo.versionCode})"
+        } catch (e: Exception) {
+            "YOLO Detector v1.0"
+        }
+        binding.tvAppVersion.text = versionText
     }
 
     private fun setupClassFilterCheckboxes() {

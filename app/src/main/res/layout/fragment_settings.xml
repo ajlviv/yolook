@@ -12,6 +12,18 @@
         android:orientation="vertical"
         android:padding="16dp">
 
+        <!-- App Version Header -->
+        <TextView
+            android:id="@+id/tvAppVersion"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="16dp"
+            android:gravity="center"
+            android:text="YOLO Detector v1.0"
+            android:textColor="#00E676"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+
         <!-- Confidence Threshold -->
         <LinearLayout
             android:layout_width="match_parent"

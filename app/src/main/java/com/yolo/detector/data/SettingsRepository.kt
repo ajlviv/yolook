@@ -58,10 +58,10 @@ class SettingsRepository(context: Context) {
             ?.mapNotNull { it.trim().toIntOrNull() }
             ?.toSet()
             .takeIf { it?.isNotEmpty() == true }
-            ?: VEHICLE_CLASS_IDS
+            ?: COCO_LABELS.indices.toSet()
 
         return InferenceSettings(
-            confidenceThreshold = this[Keys.CONF_THRESHOLD] ?: 0.40f,
+            confidenceThreshold = this[Keys.CONF_THRESHOLD] ?: 0.35f,
             iouThreshold = this[Keys.IOU_THRESHOLD] ?: 0.45f,
             maxObjects = this[Keys.MAX_OBJECTS] ?: 50,
             inferenceRateFps = this[Keys.INFERENCE_FPS] ?: 10,

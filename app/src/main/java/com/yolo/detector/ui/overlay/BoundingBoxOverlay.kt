@@ -28,28 +28,39 @@ class BoundingBoxOverlay @JvmOverloads constructor(
     defStyle: Int = 0,
 ) : View(context, attrs, defStyle) {
 
+    init {
+        setWillNotDraw(false)
+    }
+
     private val classColors = mapOf(
+        0 to Color.parseColor("#00E676"),   // person — green
         2 to Color.parseColor("#00E676"),   // car — green
         3 to Color.parseColor("#00BCD4"),   // motorcycle — cyan
         5 to Color.parseColor("#F44336"),   // bus — red
         7 to Color.parseColor("#FF9800"),   // truck — orange
     )
-    private val defaultColor = Color.parseColor("#9E9E9E")
+
+    private fun getColorForClass(classId: Int): Int {
+        return classColors[classId] ?: run {
+            val hue = (classId * 137.5f) % 360f
+            Color.HSVToColor(floatArrayOf(hue, 0.9f, 1.0f))
+        }
+    }
 
     private val boxPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
-        strokeWidth = 4f
+        strokeWidth = 6f
     }
 
     private val labelBgPaint = Paint().apply {
         style = Paint.Style.FILL
-        alpha = 200
+        alpha = 220
     }
 
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        textSize = 38f
-        typeface = Typeface.MONOSPACE
+        textSize = 40f
+        typeface = Typeface.DEFAULT_BOLD
     }
 
     private var detections: List<Detection> = emptyList()
@@ -57,7 +68,7 @@ class BoundingBoxOverlay @JvmOverloads constructor(
     /** Updates the overlay with a new frame's detections and triggers a redraw. */
     fun setDetections(dets: List<Detection>) {
         detections = dets
-        invalidate()
+        postInvalidate()
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -69,7 +80,7 @@ class BoundingBoxOverlay @JvmOverloads constructor(
         canvas.clipRect(0f, 0f, w, h)
 
         for (det in detections) {
-            val color = classColors[det.classId] ?: defaultColor
+            val color = getColorForClass(det.classId)
 
             val left   = det.bbox.left   * w
             val top    = det.bbox.top    * h

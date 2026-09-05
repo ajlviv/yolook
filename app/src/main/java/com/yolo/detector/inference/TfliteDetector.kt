@@ -41,18 +41,41 @@ class TfliteDetector(
 
     private val interpreter: Interpreter
     private var gpuDelegate: GpuDelegate? = null
+    private val isChannelsFirst: Boolean
+    private val isInputChannelsFirst: Boolean
+    private val numBoxes: Int
+    private val numClasses: Int
+    private val outputBuffer: ByteBuffer
+    private val outputFloatBuffer: java.nio.FloatBuffer
 
     // Preallocated buffers to eliminate GC churn and direct ByteBuffer native memory leaks
     private val inputBuffer: ByteBuffer = ByteBuffer
         .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * 3 * 4)
         .apply { order(ByteOrder.nativeOrder()) }
     private val scaledPixels = IntArray(INPUT_SIZE * INPUT_SIZE)
-    private val rawOutput = Array(1) { Array(NUM_CLASSES + 4) { FloatArray(NUM_BOXES) } }
 
     init {
         val model = loadModelFile(context)
         val options = buildInterpreterOptions()
         interpreter = Interpreter(model, options)
+
+        val inputTensor = interpreter.getInputTensor(0)
+        val inShape = inputTensor.shape()
+        isInputChannelsFirst = (inShape.size >= 4 && inShape[1] == 3)
+
+        val outputTensor = interpreter.getOutputTensor(0)
+        val shape = outputTensor.shape()
+        // shape is either [1, 84, 8400] (channels first) or [1, 8400, 84] (channels last)
+        isChannelsFirst = (shape.size >= 3 && shape[1] <= 100 && shape[2] > 100)
+        numBoxes = if (isChannelsFirst) shape[2] else shape[1]
+        numClasses = (if (isChannelsFirst) shape[1] else shape[2]) - 4
+
+        outputBuffer = ByteBuffer
+            .allocateDirect(outputTensor.numElements() * 4)
+            .apply { order(ByteOrder.nativeOrder()) }
+        outputFloatBuffer = outputBuffer.asFloatBuffer()
+
+        android.util.Log.i("TfliteDetector", "Model initialized. InShape=${inShape.joinToString()}, OutShape=${shape.joinToString()}, isInputCF=$isInputChannelsFirst, isOutCF=$isChannelsFirst, boxes=$numBoxes, classes=$numClasses")
     }
 
     // ── Initialisation ────────────────────────────────────────────────────────
@@ -69,12 +92,17 @@ class TfliteDetector(
     private fun buildInterpreterOptions(): Interpreter.Options {
         val options = Interpreter.Options()
         if (settings.enableGpuDelegate) {
-            val compatList = CompatibilityList()
-            if (compatList.isDelegateSupportedOnThisDevice) {
-                gpuDelegate = GpuDelegate()
-                options.addDelegate(gpuDelegate!!)
+            try {
+                val compatList = CompatibilityList()
+                if (compatList.isDelegateSupportedOnThisDevice) {
+                    val delegate = GpuDelegate()
+                    gpuDelegate = delegate
+                    options.addDelegate(delegate)
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("TfliteDetector", "Failed to init GPU delegate, fallback to CPU", e)
+                gpuDelegate = null
             }
-            // NNAPI and CPU fallback happen automatically if GPU delegate not added.
         }
         options.setNumThreads(4)
         return options
@@ -101,65 +129,82 @@ class TfliteDetector(
         }
 
         inputBuffer.rewind()
-        for (pixel in scaledPixels) {
-            inputBuffer.putFloat(((pixel shr 16) and 0xFF) / 255f)
-            inputBuffer.putFloat(((pixel shr  8) and 0xFF) / 255f)
-            inputBuffer.putFloat(( pixel         and 0xFF) / 255f)
+        if (isInputChannelsFirst) {
+            // NCHW format: RRR... GGG... BBB...
+            for (pixel in scaledPixels) {
+                inputBuffer.putFloat(((pixel shr 16) and 0xFF) / 255f)
+            }
+            for (pixel in scaledPixels) {
+                inputBuffer.putFloat(((pixel shr 8) and 0xFF) / 255f)
+            }
+            for (pixel in scaledPixels) {
+                inputBuffer.putFloat((pixel and 0xFF) / 255f)
+            }
+        } else {
+            // NHWC format: RGB RGB RGB...
+            for (pixel in scaledPixels) {
+                inputBuffer.putFloat(((pixel shr 16) and 0xFF) / 255f)
+                inputBuffer.putFloat(((pixel shr  8) and 0xFF) / 255f)
+                inputBuffer.putFloat(( pixel         and 0xFF) / 255f)
+            }
         }
         inputBuffer.rewind()
 
-        interpreter.run(inputBuffer, rawOutput)
+        outputBuffer.rewind()
+        interpreter.run(inputBuffer, outputBuffer)
+        outputFloatBuffer.rewind()
 
         val timestampMs = System.currentTimeMillis()
-        return parseOutput(rawOutput[0], timestampMs)
+        return parseOutput(timestampMs)
     }
 
     // ── Output parsing ────────────────────────────────────────────────────────
 
-    /**
-     * Parses the raw `[84, 8400]` output tensor into [Detection] instances.
-     *
-     * Each of the 8400 anchor predictions has:
-     * - [0..3]: cx, cy, w, h (normalised)
-     * - [4..83]: per-class scores
-     *
-     * Processing steps:
-     * 1. Find the highest-scoring class for each anchor.
-     * 2. Discard anchors below [InferenceSettings.confidenceThreshold].
-     * 3. Discard classes not in [InferenceSettings.classFilter].
-     * 4. Convert cx/cy/w/h to left/top/right/bottom.
-     * 5. Apply greedy NMS per class.
-     * 6. Limit to [InferenceSettings.maxObjects] detections.
-     */
-    private fun parseOutput(
-        output: Array<FloatArray>,   // [84][8400]
-        timestampMs: Long,
-    ): List<Detection> {
+    private fun parseOutput(timestampMs: Long): List<Detection> {
         val candidates = mutableListOf<Detection>()
 
-        for (boxIdx in 0 until NUM_BOXES) {
-            val cx = output[0][boxIdx]
-            val cy = output[1][boxIdx]
-            val w  = output[2][boxIdx]
-            val h  = output[3][boxIdx]
+        for (boxIdx in 0 until numBoxes) {
+            val cx: Float
+            val cy: Float
+            val w: Float
+            val h: Float
 
-            // Find best class
+            if (isChannelsFirst) {
+                cx = outputFloatBuffer.get(0 * numBoxes + boxIdx)
+                cy = outputFloatBuffer.get(1 * numBoxes + boxIdx)
+                w  = outputFloatBuffer.get(2 * numBoxes + boxIdx)
+                h  = outputFloatBuffer.get(3 * numBoxes + boxIdx)
+            } else {
+                val boxOffset = boxIdx * (numClasses + 4)
+                cx = outputFloatBuffer.get(boxOffset + 0)
+                cy = outputFloatBuffer.get(boxOffset + 1)
+                w  = outputFloatBuffer.get(boxOffset + 2)
+                h  = outputFloatBuffer.get(boxOffset + 3)
+            }
+
+            // Find best class among enabled filters
             var bestClassId = -1
             var bestScore = settings.confidenceThreshold
-            for (cls in 0 until NUM_CLASSES) {
-                val score = output[4 + cls][boxIdx]
+            for (cls in settings.classFilter) {
+                if (cls >= numClasses) continue
+                val score = if (isChannelsFirst) {
+                    outputFloatBuffer.get((4 + cls) * numBoxes + boxIdx)
+                } else {
+                    outputFloatBuffer.get(boxIdx * (numClasses + 4) + 4 + cls)
+                }
                 if (score > bestScore) {
                     bestScore = score
                     bestClassId = cls
                 }
             }
             if (bestClassId == -1) continue
-            if (bestClassId !in settings.classFilter) continue
 
-            val left   = ((cx - w / 2f) / INPUT_SIZE).coerceIn(0f, 1f)
-            val top    = ((cy - h / 2f) / INPUT_SIZE).coerceIn(0f, 1f)
-            val right  = ((cx + w / 2f) / INPUT_SIZE).coerceIn(0f, 1f)
-            val bottom = ((cy + h / 2f) / INPUT_SIZE).coerceIn(0f, 1f)
+            // Auto-detect whether output box coordinates are normalized [0, 1] or raw pixels [0, 640]
+            val scale = if (cx > 1.5f || cy > 1.5f || w > 1.5f || h > 1.5f) INPUT_SIZE.toFloat() else 1.0f
+            val left   = minOf((cx - w / 2f) / scale, (cx + w / 2f) / scale).coerceIn(0f, 1f)
+            val top    = minOf((cy - h / 2f) / scale, (cy + h / 2f) / scale).coerceIn(0f, 1f)
+            val right  = maxOf((cx - w / 2f) / scale, (cx + w / 2f) / scale).coerceIn(0f, 1f)
+            val bottom = maxOf((cy - h / 2f) / scale, (cy + h / 2f) / scale).coerceIn(0f, 1f)
 
             candidates.add(
                 Detection(
@@ -227,7 +272,16 @@ class TfliteDetector(
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
     override fun close() {
-        interpreter.close()
-        gpuDelegate?.close()
+        try {
+            interpreter.close()
+        } catch (e: Exception) {
+            android.util.Log.w("TfliteDetector", "Error closing interpreter", e)
+        }
+        try {
+            gpuDelegate?.close()
+        } catch (e: Exception) {
+            android.util.Log.w("TfliteDetector", "Error closing GPU delegate", e)
+        }
+        gpuDelegate = null
     }
 }

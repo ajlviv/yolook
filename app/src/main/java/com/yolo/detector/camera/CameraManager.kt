@@ -8,7 +8,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.yolo.detector.data.Detection
 import com.yolo.detector.data.InferenceSettings
-import com.yolo.detector.inference.toBitmap
+import com.yolo.detector.inference.toRgbBitmap
 import com.yolo.detector.inference.TfliteDetector
 import com.yolo.detector.tracking.ByteTracker
 import kotlinx.coroutines.*
@@ -146,8 +146,9 @@ class CameraManager(
 
         // Convert to bitmap on the analysis executor thread
         val bitmap = try {
-            imageProxy.toBitmap()
+            imageProxy.toRgbBitmap()
         } catch (e: Exception) {
+            android.util.Log.e("CameraManager", "Failed to convert frame to bitmap", e)
             imageProxy.close()
             isAnalyzing.set(false)
             return
@@ -161,10 +162,11 @@ class CameraManager(
                 val inferenceEnd = System.currentTimeMillis()
 
                 val tracked = tracker.update(rawDetections, inferenceEnd)
+                val toEmit = if (tracked.isNotEmpty()) tracked else rawDetections
                 _inferenceTimeMs.value = inferenceEnd - inferenceStart
-                _detectionFlow.value = tracked
+                _detectionFlow.value = toEmit
             } catch (e: Exception) {
-                // Ignore or log error
+                android.util.Log.e("CameraManager", "Inference error", e)
             } finally {
                 bitmap.recycle()
                 isAnalyzing.set(false)
@@ -175,11 +177,14 @@ class CameraManager(
     /** Shuts down the background executor and cancels the coroutine scope. */
     fun shutdown() {
         scope.cancel()
-        analysisExecutor.shutdown()
-        tracker.reset()
         cameraProvider?.unbindAll()
         cameraProvider = null
         boundCamera = null
+        analysisExecutor.shutdown()
+        try {
+            analysisExecutor.awaitTermination(500, java.util.concurrent.TimeUnit.MILLISECONDS)
+        } catch (_: InterruptedException) {}
+        tracker.reset()
         _cameraError.value = null
         _detectionFlow.value = emptyList()
     }

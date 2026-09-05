@@ -7,45 +7,12 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Converts a CameraX [ImageProxy] (YUV_420_888) to an RGB [Bitmap].
+ * Converts a CameraX [ImageProxy] to an RGB [Bitmap] with orientation rotation applied.
  *
- * Performs direct YUV→ARGB conversion without JPEG encoding/decoding,
- * reducing memory allocations and avoiding quality loss.
+ * Uses CameraX's native YUV-to-RGB conversion to avoid buffer index errors on varying hardware strides.
  */
-fun ImageProxy.toBitmap(): Bitmap {
-    val yBuffer = planes[0].buffer
-    val uBuffer = planes[1].buffer
-    val vBuffer = planes[2].buffer
-
-    val yRowStride = planes[0].rowStride
-    val uvRowStride = planes[1].rowStride
-    val uvPixelStride = planes[1].pixelStride
-
-    val w = width
-    val h = height
-    val argb = IntArray(w * h)
-
-    for (row in 0 until h) {
-        for (col in 0 until w) {
-            val yIndex = row * yRowStride + col
-            val y = (yBuffer.get(yIndex).toInt() and 0xFF) - 16
-
-            val uvRow = row shr 1
-            val uvCol = col shr 1
-            val uvIndex = uvRow * uvRowStride + uvCol * uvPixelStride
-            val u = (uBuffer.get(uvIndex).toInt() and 0xFF) - 128
-            val v = (vBuffer.get(uvIndex).toInt() and 0xFF) - 128
-
-            val r = (1.164 * y + 1.596 * v).toInt().coerceIn(0, 255)
-            val g = (1.164 * y - 0.392 * u - 0.813 * v).toInt().coerceIn(0, 255)
-            val b = (1.164 * y + 2.017 * u).toInt().coerceIn(0, 255)
-
-            argb[row * w + col] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-        }
-    }
-
-    val raw = Bitmap.createBitmap(argb, w, h, Bitmap.Config.ARGB_8888)
-
+fun ImageProxy.toRgbBitmap(): Bitmap {
+    val raw = this.toBitmap()
     val rotationDegrees = imageInfo.rotationDegrees
     return if (rotationDegrees != 0) {
         val matrix = Matrix().apply { postRotate(rotationDegrees.toFloat()) }
