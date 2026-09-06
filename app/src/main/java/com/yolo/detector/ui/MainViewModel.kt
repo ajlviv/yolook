@@ -25,7 +25,8 @@ import java.io.FileNotFoundException
  *
  * Exposes three StateFlows for UI consumption:
  * - [detectionFlow] — current frame's tracked detections.
- * - [historyFlow]  — rolling in-memory list of the last [MAX_HISTORY] detections.
+ * - [historyFlow]  — in-memory summary of the last [MAX_HISTORY] seen objects,
+ *   grouped by track so each object is shown once.
  * - [statsFlow]    — live performance metrics (FPS, latency, object count).
  *
  * When [InferenceSettings] change, the detector is torn down and recreated so the
@@ -56,8 +57,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _detectionFlow = MutableStateFlow<List<Detection>>(emptyList())
     val detectionFlow: StateFlow<List<Detection>> = _detectionFlow.asStateFlow()
 
-    private val _historyFlow = MutableStateFlow<List<Detection>>(emptyList())
-    val historyFlow: StateFlow<List<Detection>> = _historyFlow.asStateFlow()
+    /** Per-track aggregate of every object seen so far; key is the [HistoryEntry] track identity. */
+    private val historyByTrack = mutableMapOf<Int, HistoryEntry>()
+    private val _historyFlow = MutableStateFlow<List<HistoryEntry>>(emptyList())
+    val historyFlow: StateFlow<List<HistoryEntry>> = _historyFlow.asStateFlow()
 
     private val _statsFlow = MutableStateFlow(InferenceStats())
     val statsFlow: StateFlow<InferenceStats> = _statsFlow.asStateFlow()
@@ -114,8 +117,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun collectDetections(mgr: CameraManager) {
         mgr.detectionFlow.collect { detections ->
             _detectionFlow.value = detections
-            val updatedHistory = (_historyFlow.value + detections).takeLast(MAX_HISTORY)
-            _historyFlow.value = updatedHistory
+            for (detection in detections) {
+                upsertHistory(detection)
+            }
+            trimHistory()
+            _historyFlow.value = historyByTrack.values.sortedByDescending { it.lastSeenMs }
 
             val now = System.currentTimeMillis()
             val elapsed = (now - lastFrameMs).coerceAtLeast(1L)
@@ -128,6 +134,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 objectCount = detections.size,
             )
         }
+    }
+
+    /**
+     * Folds a single frame detection into the per-track history.
+     *
+     * Both history updates and [collectDetections] run on the main thread, so mutating
+     * [HistoryEntry] fields in place is safe. Objects with a real track ID are grouped
+     * by that ID; untracked detections (trackId = -1) of the same class share one bucket.
+     */
+    private fun upsertHistory(detection: Detection) {
+        val key = if (detection.trackId >= 0) detection.trackId else -(detection.classId + 1)
+        val entry = historyByTrack[key]
+
+        if (entry == null) {
+            historyByTrack[key] = HistoryEntry(
+                trackId = detection.trackId,
+                classId = detection.classId,
+                count = 1,
+                firstSeenMs = detection.timestampMs,
+                lastSeenMs = detection.timestampMs,
+                bestConfidence = detection.confidence,
+                lastBbox = detection.bbox,
+            )
+            return
+        }
+
+        entry.classId = detection.classId
+        entry.count += 1
+        entry.lastSeenMs = detection.timestampMs
+        if (detection.confidence > entry.bestConfidence) {
+            entry.bestConfidence = detection.confidence
+        }
+        entry.lastBbox = detection.bbox
+    }
+
+    /** Drops the oldest objects once history exceeds [MAX_HISTORY] entries. */
+    private fun trimHistory() {
+        if (historyByTrack.size <= MAX_HISTORY) return
+        historyByTrack.entries
+            .sortedBy { it.value.lastSeenMs }
+            .take(historyByTrack.size - MAX_HISTORY)
+            .forEach { historyByTrack.remove(it.key) }
     }
 
     private fun recreateDetector(settings: InferenceSettings) {
@@ -206,6 +254,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Clears the in-memory detection history. */
     fun clearHistory() {
+        historyByTrack.clear()
         _historyFlow.value = emptyList()
     }
 

@@ -13,7 +13,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.yolo.detector.R
-import com.yolo.detector.data.Detection
+import com.yolo.detector.data.HistoryEntry
 import com.yolo.detector.data.labelFor
 import com.yolo.detector.databinding.FragmentHistoryBinding
 import com.yolo.detector.ui.MainViewModel
@@ -23,7 +23,8 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * History fragment: displays an in-memory list of recent detections.
+ * History fragment: displays an in-memory list of the objects seen, grouped by
+ * track so each object appears once with its aggregate stats
  */
 class HistoryFragment : Fragment() {
 
@@ -55,7 +56,7 @@ class HistoryFragment : Fragment() {
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.historyFlow.collect { list ->
-                    adapter.submitList(list.reversed()) // show newest first
+                    adapter.submitList(list)
                     binding.tvEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
                     binding.recyclerView.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
                 }
@@ -69,10 +70,10 @@ class HistoryFragment : Fragment() {
     }
 
     private class HistoryAdapter : RecyclerView.Adapter<HistoryAdapter.ViewHolder>() {
-        private var items = listOf<Detection>()
-        private val dateFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.getDefault())
+        private var items = listOf<HistoryEntry>()
+        private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-        fun submitList(newItems: List<Detection>) {
+        fun submitList(newItems: List<HistoryEntry>) {
             items = newItems
             notifyDataSetChanged()
         }
@@ -87,11 +88,19 @@ class HistoryFragment : Fragment() {
             val item = items[position]
             val label = labelFor(item.classId)
             val track = if (item.trackId >= 0) "#${item.trackId}" else "?"
-            val conf = "${(item.confidence * 100).toInt()}%"
-            val time = dateFormat.format(Date(item.timestampMs))
+            val best = "${(item.bestConfidence * 100).toInt()}%"
+            holder.tvTitle.text = "$label $track · seen ${item.count}×"
+            holder.tvSubtitle.text = "best $best · ${formatTimeSpan(item)}"
+        }
 
-            holder.tvTitle.text = "$label ($track) - $conf"
-            holder.tvSubtitle.text = "Time: $time | Box: [${"%.2f".format(item.bbox.left)}, ${"%.2f".format(item.bbox.top)}, ${"%.2f".format(item.bbox.right)}, ${"%.2f".format(item.bbox.bottom)}]"
+        private fun formatTimeSpan(item: HistoryEntry): String {
+            val start = timeFormat.format(Date(item.firstSeenMs))
+            val end = timeFormat.format(Date(item.lastSeenMs))
+            val secs = ((item.lastSeenMs - item.firstSeenMs) / 1000).coerceAtLeast(0)
+            val minutes = secs / 60
+            val remSeconds = secs % 60
+            val duration = if (minutes > 0) "${minutes}m${remSeconds}s" else "${remSeconds}s"
+            return "$start - $end ($duration)"
         }
 
         override fun getItemCount(): Int = items.size
