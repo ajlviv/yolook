@@ -66,23 +66,31 @@ private fun heatmapLUT(): IntArray {
 }
 
 /**
- * Bakes a hot-metal heatmap colormap into this bitmap (takes ownership of it).
+ * Returns a hot-metal heatmap copy of this bitmap.
  *
  * Each pixel's Rec.601 luminance [0,255] is mapped through a precomputed
  * blue→red lookup table, giving the classic "thermal" look. The frame is baked
  * at reduced resolution for speed and the result scaled up by the ImageView.
  *
+ * `this` is not modified or recycled; the caller keeps ownership of it and owns
+ * the newly returned bitmap.
+ *
  * @param downscale  1 = full resolution, 2 = half resolution (4× fewer pixels).
- * @return the baked bitmap (the original, or a new downscaled copy whose
- *         original has been recycled). Caller owns the returned bitmap.
+ * @return a new bitmap with the heatmap colormap baked in.
  */
 fun Bitmap.applyHeatmap(downscale: Int = 2): Bitmap {
     val tw = (width / downscale).coerceAtLeast(1)
     val th = (height / downscale).coerceAtLeast(1)
     val scaleDown = tw != width || th != height
 
-    // If scaling down, hand `this` over to createScaledBitmap, then own `src`.
-    val src = if (scaleDown) Bitmap.createScaledBitmap(this, tw, th, true) else this
+    // The result is always a new, MUTABLE bitmap (a downscaled copy or a full-size
+    // copy) because it is baked with setPixels below. `this` is left untouched,
+    // so the caller controls its lifetime (and can recycle it even if canceled).
+    val src = if (scaleDown) {
+        Bitmap.createScaledBitmap(this, tw, th, true)
+    } else {
+        this.copy(Bitmap.Config.ARGB_8888, true)
+    }
     val pixels = IntArray(tw * th)
     src.getPixels(pixels, 0, tw, 0, 0, tw, th)
 
@@ -96,6 +104,5 @@ fun Bitmap.applyHeatmap(downscale: Int = 2): Bitmap {
     }
     src.setPixels(pixels, 0, tw, 0, 0, tw, th)
 
-    if (scaleDown) recycle()
     return src
 }

@@ -20,6 +20,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.currentCoroutineContext
 
 /**
  * Live camera fragment: shows the PreviewView, bounding-box overlay, and a stats HUD.
@@ -40,8 +41,9 @@ class LiveFragment : Fragment() {
 
     // Heatmap rendering. Baking is slow (per-pixel), so a single serial worker
     // bakes the newest pending frame and drops intermediate ones. This lets the
-    // heatmap update at the bake rate regardless of the analysis FPS, and avoids
-    // the old cancel-per-frame behaviour that left the raw preview showing.
+    // heatmap update at the bake rate regardless of the analysis FPS. All pending
+    // frame / worker state lives on the main thread; only the bake itself runs on
+    // a background thread, so drop-oldest recycling cannot race the baker.
     private var pendingHeatmapFrame: Bitmap? = null
     private var heatmapWorker: Job? = null
 
@@ -83,12 +85,24 @@ class LiveFragment : Fragment() {
                 }
                 launch {
                     viewModel.frameFlow.collect { bitmap ->
-                        if (bitmap != null && currentMode != ViewMode.NORMAL) {
-                            if (currentMode == ViewMode.HEATMAP) {
-                                onHeatmapFrame(bitmap)
-                            } else {
-                                commitFrame(bitmap)
+                        if (bitmap != null) {
+                            // Frame copies are only emitted while a filtered mode is
+                            // active, so the coverage overlay must be on. Keying this
+                            // off frame arrival instead of the async settingsFlow
+                            // closes the startup/switch gap where the camera is already
+                            // filtering but applyViewMode() hasn't run yet — otherwise
+                            // the raw camera feed shows through during that window.
+                            binding.imageFilterPreview.visibility = View.VISIBLE
+                            when (currentMode) {
+                                ViewMode.HEATMAP -> onHeatmapFrame(bitmap)
+                                ViewMode.NORMAL -> bitmap.recycle() // camera filtered, UI not yet updated
+                                else -> commitFrame(bitmap)
                             }
+                        } else if (currentMode == ViewMode.NORMAL) {
+                            // Camera switched back to the plain preview: mirror it by
+                            // clearing the filtered image and hiding the overlay.
+                            clearDisplayedFrame()
+                            binding.imageFilterPreview.visibility = View.GONE
                         }
                     }
                 }
@@ -127,7 +141,7 @@ class LiveFragment : Fragment() {
             }
         }
     }
-/** Switches between the raw preview and the filtered frame renderer overlay. */
+    /** Switches between the raw preview and the filtered frame renderer overlay. */
     private fun applyViewMode(mode: ViewMode) {
         if (mode == currentMode) return
         android.util.Log.i("ViewMode", "applyViewMode=$mode")
@@ -146,29 +160,30 @@ class LiveFragment : Fragment() {
 
     /**
      * Receives a heatmap-mode frame. Keeps only the newest frame (drop-oldest) and
-     * hands it to the serial baker; intermediate frames are recycled.
-     * Owns [frame] on entry.
+     * hands it to the serial baker. Owns [frame] on entry; the baker recycles it.
      */
     private fun onHeatmapFrame(frame: Bitmap) {
-        val old = pendingHeatmapFrame
+        pendingHeatmapFrame?.recycle()
         pendingHeatmapFrame = frame
-        old?.recycle()
         ensureHeatmapWorker()
     }
 
     /** Starts the baker if it is not already running. */
     private fun ensureHeatmapWorker() {
         if (heatmapWorker != null) return
-        heatmapWorker = viewLifecycleOwner.lifecycleScope.launch(Dispatchers.Default) {
+        heatmapWorker = viewLifecycleOwner.lifecycleScope.launch {
             runHeatmapLoop()
         }
     }
 
     /**
-     * Serial heatmap loop: bakes the latest pending frame, commits it on the UI
-     * thread, then loops for any newer frame. Exits when out of frames or the mode
-     * changes. Cancellations are not possible mid-bake because we never cancel the
-     * running job while it is needed — only mode switches tear it down.
+     * Serial heatmap loop (runs on main; bakes on a background thread). Bakes the
+     * latest pending frame and commits it, looping for any newer frame. Exits when
+     * out of frames or the mode changes.
+     *
+     * Keeping the loop, the pending-slot and the worker reference main-confined
+     * guarantees the drop-oldest recycle below cannot race the bake that previously
+     * consumed a frame.
      */
     private suspend fun runHeatmapLoop() {
         try {
@@ -176,25 +191,32 @@ class LiveFragment : Fragment() {
                 val frame = pendingHeatmapFrame ?: return
                 pendingHeatmapFrame = null
 
-                // Synchronous, non-suspending: cannot be cancelled mid-bake.
-                // Takes ownership of `frame` (recycles it internally if it downscaled).
-                val baked = frame.applyHeatmap()
-
-                var committed = false
+                // Transfer the computed result back to the main thread where we can
+                // react to cancellation and safely recycle every bitmap we own.
+                val holder = arrayOfNulls<Bitmap>(1)
                 try {
-                    withContext(Dispatchers.Main) {
-                        if (!isActive || currentMode != ViewMode.HEATMAP) return@withContext
-                        commitFrame(baked)
-                        committed = true
+                    withContext(Dispatchers.Default) {
+                        // Synchronous bake. applyHeatmap does NOT recycle the source.
+                        holder[0] = frame.applyHeatmap()
                     }
+                    val baked = holder[0] ?: return
+                    if (currentMode != ViewMode.HEATMAP || !currentCoroutineContext().isActive) {
+                        baked.recycle()
+                        return
+                    }
+                    commitFrame(baked)
                 } catch (e: kotlinx.coroutines.CancellationException) {
-                    if (!committed) baked.recycle()
+                    holder[0]?.recycle()
                     throw e
+                } finally {
+                    // We always own the source frame here; recycle it in every path.
+                    frame.recycle()
                 }
-                if (!committed) baked.recycle()
             }
         } finally {
-            heatmapWorker = null
+            // Only tear down our own reference so we never clobber a replacement
+            // worker started by a later ensureHeatmapWorker() after a mode switch.
+            if (currentCoroutineContext()[Job] == heatmapWorker) heatmapWorker = null
         }
     }
 
@@ -223,16 +245,44 @@ class LiveFragment : Fragment() {
     private fun captureAndSaveSnapshot() {
         val isFiltered = currentMode != ViewMode.NORMAL
         val frame = if (isFiltered) {
+            // Filtered view: snapshot the displayed (already-heatmapped) frame.
             displayedBitmap?.copy(Bitmap.Config.ARGB_8888, true)
         } else {
             // Capture the raw preview as a single bitmap.
             binding.previewView.bitmap?.copy(Bitmap.Config.ARGB_8888, true)
         } ?: return
 
+        // Draw at the on-screen overlay size so detections align with the captured frame.
+        val w = binding.overlay.width.takeIf { it > 0 } ?: frame.width
+        val h = binding.overlay.height.takeIf { it > 0 } ?: frame.height
+
+        // B&W / Invert are GPU color-matrix filters applied by the ImageView, so bake
+        // them onto the snapshot the same way for a faithful capture. Heatmap is
+        // already baked into displayedBitmap at this point.
+        val paint = when (currentMode) {
+            ViewMode.BLACK_AND_WHITE -> android.graphics.Paint().apply {
+                colorFilter = ViewModeEffects.blackAndWhiteColorFilter()
+            }
+            ViewMode.INVERT -> android.graphics.Paint().apply {
+                colorFilter = ViewModeEffects.invertColorFilter()
+            }
+            else -> null
+        }
+
         // Merge the bounding-box overlay over the frame.
-        val merged = Bitmap.createBitmap(frame.width, frame.height, Bitmap.Config.ARGB_8888)
+        val merged = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val canvas = android.graphics.Canvas(merged)
-        canvas.drawBitmap(frame, 0f, 0f, null)
+        if (w == frame.width && h == frame.height) {
+            canvas.drawBitmap(frame, 0f, 0f, paint)
+        } else {
+            // center-crop to the overlay aspect, matching the ImageView's centerCrop.
+            val scale = maxOf(w / frame.width.toFloat(), h / frame.height.toFloat())
+            val dw = (frame.width * scale).toInt()
+            val dh = (frame.height * scale).toInt()
+            val left = (w - dw) / 2
+            val top = (h - dh) / 2
+            canvas.drawBitmap(frame, null, android.graphics.Rect(left, top, left + dw, top + dh), paint)
+        }
         binding.overlay.draw(canvas)
         frame.recycle()
 
