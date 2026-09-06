@@ -41,6 +41,8 @@ class SettingsRepository(context: Context) {
         val GPU_ENABLED = booleanPreferencesKey("gpu_enabled")
         // Stored as a comma-separated string of integers, e.g. "2,3,5,7"
         val CLASS_FILTER_IDS = stringPreferencesKey("class_filter_ids")
+        // Stored as the enum name, e.g. "HEATMAP"
+        val VIEW_MODE = stringPreferencesKey("view_mode")
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -67,8 +69,12 @@ class SettingsRepository(context: Context) {
             inferenceRateFps = this[Keys.INFERENCE_FPS] ?: 10,
             enableGpuDelegate = this[Keys.GPU_ENABLED] ?: true,
             classFilter = filterIds,
+            viewMode = this[Keys.VIEW_MODE]?.enumValueOrDefault() ?: ViewMode.NORMAL,
         )
     }
+
+    private fun String.enumValueOrDefault(): ViewMode =
+        ViewMode.entries.firstOrNull { it.name == this } ?: ViewMode.NORMAL
 
     // ── Write ─────────────────────────────────────────────────────────────────
 
@@ -94,6 +100,10 @@ class SettingsRepository(context: Context) {
 
     suspend fun setClassFilter(ids: Set<Int>) {
         dataStore.edit { it[Keys.CLASS_FILTER_IDS] = ids.joinToString(",") }
+    }
+
+    suspend fun setViewMode(mode: ViewMode) {
+        dataStore.edit { it[Keys.VIEW_MODE] = mode.name }
     }
 
     /** Resets all settings to factory defaults by clearing the DataStore. */

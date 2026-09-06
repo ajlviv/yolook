@@ -13,7 +13,18 @@
     <string name="settings_inference_fps">Inference FPS cap</string>
     <string name="settings_gpu_delegate">Use GPU delegate</string>
     <string name="settings_class_filter">Class filter</string>
+    <string name="settings_view_mode">View mode</string>
     <string name="settings_reset">Reset to defaults</string>
+    <string name="view_mode_normal">Normal</string>
+    <string name="view_mode_black_white">Black &amp; White</string>
+    <string name="view_mode_invert">Invert</string>
+    <string name="view_mode_heatmap">Heatmap</string>
+    <string-array name="view_modes">
+        <item>@string/view_mode_normal</item>
+        <item>@string/view_mode_black_white</item>
+        <item>@string/view_mode_invert</item>
+        <item>@string/view_mode_heatmap</item>
+    </string-array>
     <string name="permission_rationale">Camera permission is required to run the live detector.</string>
     <string name="snapshot_saved">Snapshot saved to gallery</string>
     <string name="snapshot_failed">Failed to save snapshot</string>

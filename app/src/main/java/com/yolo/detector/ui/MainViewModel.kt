@@ -57,6 +57,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _detectionFlow = MutableStateFlow<List<Detection>>(emptyList())
     val detectionFlow: StateFlow<List<Detection>> = _detectionFlow.asStateFlow()
 
+    /**
+     * Latest frame bitmap for filtered view modes (null when viewing normally).
+     * Presented by mirroring the active [CameraManager.frameFlow].
+     */
+    private val _frameFlow = MutableStateFlow<Bitmap?>(null)
+    val frameFlow: StateFlow<Bitmap?> = _frameFlow.asStateFlow()
+
     /** Per-track aggregate of every object seen so far; key is the [HistoryEntry] track identity. */
     private val historyByTrack = mutableMapOf<Int, HistoryEntry>()
     private val _historyFlow = MutableStateFlow<List<HistoryEntry>>(emptyList())
@@ -108,6 +115,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (mgr == null) return@collectLatest
                 coroutineScope {
                     launch { collectDetections(mgr) }
+                    launch { mgr.frameFlow.collect { _frameFlow.value = it } }
                     launch { mgr.cameraError.collect { msg -> _cameraError.value = msg } }
                 }
             }
@@ -303,6 +311,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setInferenceRateFps(v: Int)      = viewModelScope.launch { settingsRepo.setInferenceRateFps(v) }
     fun setGpuEnabled(v: Boolean)        = viewModelScope.launch { settingsRepo.setGpuEnabled(v) }
     fun setClassFilter(ids: Set<Int>)    = viewModelScope.launch { settingsRepo.setClassFilter(ids) }
+    fun setViewMode(mode: ViewMode)      = viewModelScope.launch { settingsRepo.setViewMode(mode) }
     fun resetSettings()                  = viewModelScope.launch { settingsRepo.resetToDefaults() }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────

@@ -24,4 +24,7 @@ data class InferenceSettings(
      * Defaults to all 80 COCO classes.
      */
     val classFilter: Set<Int> = COCO_LABELS.indices.toSet(),
+
+    /** Visual filter applied to the live camera preview. */
+    val viewMode: ViewMode = ViewMode.NORMAL,
 )

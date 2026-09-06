@@ -16,6 +16,21 @@
         app:layout_constraintTop_toTopOf="parent"
         app:scaleType="fillCenter" />
 
+    <!-- Filtered view-mode frame renderer. Hidden (GONE) in NORMAL view mode.
+         Opaque black background so the raw preview underneath never shows through
+         before the first filtered frame is baked. -->
+    <ImageView
+        android:id="@+id/imageFilterPreview"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:background="#000000"
+        android:scaleType="centerCrop"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
     <com.yolo.detector.ui.overlay.BoundingBoxOverlay
         android:id="@+id/overlay"
         android:layout_width="0dp"
