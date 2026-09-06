@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.LinearLayout
 import androidx.fragment.app.Fragment
@@ -14,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.yolo.detector.data.COCO_LABELS
 import com.yolo.detector.data.VEHICLE_CLASS_IDS
+import com.yolo.detector.data.ViewMode
 import com.yolo.detector.databinding.FragmentSettingsBinding
 import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.util.snapToStep
@@ -34,6 +37,10 @@ class SettingsFragment : Fragment() {
     // change listener (which would call setClassFilter → re-emit → flicker loop).
     private var syncingFromSettings = false
 
+    // Tracks the ordinal currently shown in the view-mode spinner so a programmatic
+    // re-sync does not re-trigger setViewMode().
+    private var currentViewModeOrdinal = ViewMode.NORMAL.ordinal
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -48,8 +55,28 @@ class SettingsFragment : Fragment() {
 
         displayAppVersion()
         setupClassFilterCheckboxes()
+        setupViewModeSpinner()
         setupListeners()
         observeSettings()
+    }
+
+    private fun setupViewModeSpinner() {
+        val modes = resources.getStringArray(R.array.view_modes).toList()
+        binding.spViewMode.adapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            modes,
+        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+        binding.spViewMode.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                if (position == currentViewModeOrdinal) return
+                currentViewModeOrdinal = position
+                viewModel.setViewMode(ViewMode.entries[position])
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) {}
+        }
     }
 
     private fun displayAppVersion() {
@@ -160,6 +187,9 @@ class SettingsFragment : Fragment() {
                         checkBox.isChecked = id in settings.classFilter
                     }
                     syncingFromSettings = false
+
+                    currentViewModeOrdinal = settings.viewMode.ordinal
+                    binding.spViewMode.setSelection(settings.viewMode.ordinal)
                 }
             }
         }

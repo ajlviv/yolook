@@ -1,6 +1,7 @@
 package com.yolo.detector.camera
 
 import android.content.Context
+import android.graphics.Bitmap
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -9,6 +10,7 @@ import androidx.lifecycle.LifecycleOwner
 import com.yolo.detector.data.Detection
 import com.yolo.detector.data.InferenceSettings
 import com.yolo.detector.inference.toRgbBitmap
+import com.yolo.detector.data.ViewMode
 import com.yolo.detector.inference.TfliteDetector
 import com.yolo.detector.tracking.ByteTracker
 import kotlinx.coroutines.*
@@ -41,6 +43,16 @@ class CameraManager(
 
     private val _detectionFlow = MutableStateFlow<List<Detection>>(emptyList())
     val detectionFlow: StateFlow<List<Detection>> = _detectionFlow
+
+    /**
+     * Latest frame bitmap for filtered view modes, or null when viewing normally.
+     *
+     * Ownership transfers to the consumer: the UI recycles each emitted bitmap once
+     * it has been replaced or cleared. Emitting only happens for non-NORMAL view modes
+     * to avoid redundant copies of the always-running inference frames.
+     */
+    private val _frameFlow = MutableStateFlow<Bitmap?>(null)
+    val frameFlow: StateFlow<Bitmap?> = _frameFlow
 
     private val _inferenceTimeMs = MutableStateFlow(0L)
     val inferenceTimeMs: StateFlow<Long> = _inferenceTimeMs
@@ -157,6 +169,16 @@ class CameraManager(
 
         scope.launch {
             try {
+                // For filtered view modes, hand a copy of the frame to the UI for display.
+                // Ownership of the copy moves to the consumer; the inference bitmap is
+                // still recycled below. NORMAL mode keeps the smooth PreviewView instead.
+                if (settings.viewMode != ViewMode.NORMAL) {
+                    android.util.Log.i("ViewMode", "emit frame ${settings.viewMode}")
+                    _frameFlow.value = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                } else if (_frameFlow.value != null) {
+                    _frameFlow.value = null
+                }
+
                 val inferenceStart = System.currentTimeMillis()
                 val rawDetections = detector.detect(bitmap)
                 val inferenceEnd = System.currentTimeMillis()
@@ -187,5 +209,6 @@ class CameraManager(
         tracker.reset()
         _cameraError.value = null
         _detectionFlow.value = emptyList()
+        _frameFlow.value = null
     }
 }
