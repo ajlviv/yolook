@@ -8,11 +8,13 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.yolo.detector.data.Detection
+import com.yolo.detector.data.DriverScene
 import com.yolo.detector.data.InferenceSettings
 import com.yolo.detector.inference.toRgbBitmap
 import com.yolo.detector.data.ViewMode
 import com.yolo.detector.inference.TfliteDetector
 import com.yolo.detector.tracking.ByteTracker
+import com.yolo.detector.ui.DriverSceneBuilder
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -39,10 +41,16 @@ class CameraManager(
     @Volatile var settings: InferenceSettings,
     private val detector: TfliteDetector,
     private val tracker: ByteTracker,
+    private val driverSceneBuilder: DriverSceneBuilder,
 ) {
 
     private val _detectionFlow = MutableStateFlow<List<Detection>>(emptyList())
     val detectionFlow: StateFlow<List<Detection>> = _detectionFlow
+
+    /** Driver-mode HUD scene, built on this manager's analysis thread from the live
+     *  frame (before it is recycled) + the detections for that same frame. */
+    private val _driverSceneFlow = MutableStateFlow(DriverScene())
+    val driverSceneFlow: StateFlow<DriverScene> = _driverSceneFlow
 
     /**
      * Latest frame bitmap for filtered view modes, or null when viewing normally.
@@ -169,11 +177,17 @@ class CameraManager(
 
         scope.launch {
             try {
-                // For filtered view modes, hand a copy of the frame to the UI for display.
-                // Ownership of the copy moves to the consumer; the inference bitmap is
-                // still recycled below. NORMAL mode keeps the smooth PreviewView instead.
-                if (settings.viewMode != ViewMode.NORMAL) {
-                    android.util.Log.i("ViewMode", "emit frame ${settings.viewMode}")
+                val viewMode = settings.viewMode
+                // NORMAL keeps the smooth PreviewView. Every other mode renders through
+                // the filtered ImageView: B&W/Invert/Heatmap bake their look, and DRIVER
+                // shows a dimmed frame as the background scene when the raw preview is
+                // hidden (driver + "hide camera view"), so the screen is never black.
+                val needsFrameCopy =
+                    viewMode == ViewMode.BLACK_AND_WHITE ||
+                    viewMode == ViewMode.INVERT ||
+                    viewMode == ViewMode.HEATMAP ||
+                    viewMode == ViewMode.DRIVER
+                if (needsFrameCopy) {
                     _frameFlow.value = bitmap.copy(Bitmap.Config.ARGB_8888, true)
                 } else if (_frameFlow.value != null) {
                     _frameFlow.value = null
@@ -187,6 +201,15 @@ class CameraManager(
                 val toEmit = if (tracked.isNotEmpty()) tracked else rawDetections
                 _inferenceTimeMs.value = inferenceEnd - inferenceStart
                 _detectionFlow.value = toEmit
+
+                // Build the driver HUD scene on this same analysis thread while `bitmap`
+                // is still owned and alive (it is recycled in `finally` below). Building
+                // it here — instead of letting the ViewModel read a frame the UI owns and
+                // recycles — removes a cross-coroutine "getPixels on recycled bitmap" race
+                // that could otherwise kill the driver scene and hide the Signals bar.
+                if (viewMode == ViewMode.DRIVER) {
+                    _driverSceneFlow.value = driverSceneBuilder.build(toEmit, bitmap)
+                }
             } catch (e: Exception) {
                 android.util.Log.e("CameraManager", "Inference error", e)
             } finally {
@@ -210,5 +233,6 @@ class CameraManager(
         _cameraError.value = null
         _detectionFlow.value = emptyList()
         _frameFlow.value = null
+        _driverSceneFlow.value = DriverScene()
     }
 }

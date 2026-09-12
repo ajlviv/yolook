@@ -168,6 +168,28 @@
             android:prompt="@string/view_mode_normal"
             app:backgroundTint="#2C2C2C" />
 
+        <!-- Driver-mode audio warnings -->
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchSound"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_sound_enabled"
+            android:textColor="#FFFFFF"
+            app:thumbTint="#00E676"
+            app:trackTint="#3300E676" />
+
+        <!-- Driver-mode: hide the camera preview, icons/HUD only -->
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchHideCamera"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/settings_hide_camera_driver"
+            android:textColor="#FFFFFF"
+            app:thumbTint="#00E676"
+            app:trackTint="#3300E676" />
+
         <!-- Class Filters -->
         <TextView
             android:layout_width="match_parent"

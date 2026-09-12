@@ -41,6 +41,15 @@ class SettingsFragment : Fragment() {
     // re-sync does not re-trigger setViewMode().
     private var currentViewModeOrdinal = ViewMode.NORMAL.ordinal
 
+    // Set while the spinner is being updated programmatically (adapter set / selection
+    // changed) so onItemSelected callbacks are ignored until the sync settles. This
+    // prevents a layout-pass reset to position 0 from calling setViewMode(NORMAL).
+    private var syncingViewMode = false
+
+    // Held so we can detach it before a programmatic setSelection (which would otherwise
+    // fire onItemSelected and spuriously call setViewMode).
+    private var viewModeListener: AdapterView.OnItemSelectedListener? = null
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -62,21 +71,38 @@ class SettingsFragment : Fragment() {
 
     private fun setupViewModeSpinner() {
         val modes = resources.getStringArray(R.array.view_modes).toList()
+        // Setting a new adapter resets the selection to 0 and fires onItemSelected(0)
+        // on the next layout pass. Guard so that callback is not treated as a user action.
+        syncingViewMode = true
         binding.spViewMode.adapter = ArrayAdapter(
             requireContext(),
             android.R.layout.simple_spinner_item,
             modes,
         ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+        binding.spViewMode.post { syncingViewMode = false }
 
-        binding.spViewMode.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+        viewModeListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                // Ignore callbacks while we're programmatically syncing the spinner
+                // (adapter set or selection change) — those are not user actions.
+                if (syncingViewMode) return
                 if (position == currentViewModeOrdinal) return
-                currentViewModeOrdinal = position
-                viewModel.setViewMode(ViewMode.entries[position])
+                if (position !in ViewMode.entries.indices) return
+                // Spinners fire transient onItemSelected callbacks during layout passes
+                // with a stale position (often 0). Defer and re-verify: only act once the
+                // selection has actually settled on the reported position. This stops a
+                // layout bounce from flipping the mode out from under the driver.
+                binding.spViewMode.post {
+                    if (binding.spViewMode.selectedItemPosition == position) {
+                        currentViewModeOrdinal = position
+                        viewModel.setViewMode(ViewMode.entries[position])
+                    }
+                }
             }
 
             override fun onNothingSelected(parent: AdapterView<*>) {}
         }
+        binding.spViewMode.onItemSelectedListener = viewModeListener
     }
 
     private fun displayAppVersion() {
@@ -149,6 +175,14 @@ class SettingsFragment : Fragment() {
             viewModel.setGpuEnabled(isChecked)
         }
 
+        binding.switchSound.setOnCheckedChangeListener { _, isChecked ->
+            viewModel.setSoundEnabled(isChecked)
+        }
+
+        binding.switchHideCamera.setOnCheckedChangeListener { _, isChecked ->
+            viewModel.setDriverModeHideCamera(isChecked)
+        }
+
         binding.btnSelectVehiclesOnly.setOnClickListener {
             viewModel.setClassFilter(VEHICLE_CLASS_IDS)
         }
@@ -182,6 +216,9 @@ class SettingsFragment : Fragment() {
 
                     binding.switchGpu.isChecked = settings.enableGpuDelegate
 
+                    binding.switchSound.isChecked = settings.soundEnabled
+                    binding.switchHideCamera.isChecked = settings.driverModeHideCamera
+
                     syncingFromSettings = true
                     classCheckBoxes.forEach { (id, checkBox) ->
                         checkBox.isChecked = id in settings.classFilter
@@ -189,7 +226,14 @@ class SettingsFragment : Fragment() {
                     syncingFromSettings = false
 
                     currentViewModeOrdinal = settings.viewMode.ordinal
+                    // Sync the spinner programmatically. setSelection fires onItemSelected
+                    // asynchronously, so guard with a flag and clear it after the
+                    // selection has settled (post{}) — otherwise a layout-pass reset to
+                    // position 0 would call setViewMode(NORMAL) and flip the mode out from
+                    // under the driver.
+                    syncingViewMode = true
                     binding.spViewMode.setSelection(settings.viewMode.ordinal)
+                    binding.spViewMode.post { syncingViewMode = false }
                 }
             }
         }

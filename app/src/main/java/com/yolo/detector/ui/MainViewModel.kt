@@ -10,6 +10,8 @@ import android.widget.Toast
 import androidx.camera.view.PreviewView
 import androidx.lifecycle.*
 import com.yolo.detector.R
+import com.yolo.detector.audio.JetpackSoundPlayer
+import com.yolo.detector.audio.WarningSoundManager
 import com.yolo.detector.camera.CameraManager
 import com.yolo.detector.data.*
 import com.yolo.detector.inference.ModelAssets
@@ -72,6 +74,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _statsFlow = MutableStateFlow(InferenceStats())
     val statsFlow: StateFlow<InferenceStats> = _statsFlow.asStateFlow()
 
+    /** Driver-mode scene: traffic lights + signs + people/warnings for the HUD. */
+    private val _driverSceneFlow = MutableStateFlow(DriverScene())
+    val driverSceneFlow: StateFlow<DriverScene> = _driverSceneFlow.asStateFlow()
+
     private val _pipelineError = MutableStateFlow<String?>(null)
     val pipelineError: StateFlow<String?> = _pipelineError.asStateFlow()
 
@@ -89,11 +95,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var boundLifecycleOwner: LifecycleOwner? = null
     private var boundPreviewView: PreviewView? = null
 
+    private val driverSceneBuilder = DriverSceneBuilder()
+    private lateinit var soundManager: WarningSoundManager
+
     init {
+        soundManager = WarningSoundManager(JetpackSoundPlayer(getApplication()))
+
         viewModelScope.launch {
             settingsRepo.settingsFlow.collect { newSettings ->
                 val oldSettings = currentSettings
                 currentSettings = newSettings
+
+                soundManager.setEnabled(newSettings.soundEnabled)
+                soundManager.setVolume(newSettings.soundVolume)
+                if (newSettings.viewMode == ViewMode.DRIVER && oldSettings.viewMode != ViewMode.DRIVER) {
+                    driverSceneBuilder.reset()
+                    soundManager.reset()
+                }
 
                 if (detector == null) {
                     loadDetector(newSettings)
@@ -117,6 +135,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     launch { collectDetections(mgr) }
                     launch { mgr.frameFlow.collect { _frameFlow.value = it } }
                     launch { mgr.cameraError.collect { msg -> _cameraError.value = msg } }
+                    launch {
+                        // The driver scene is built inside the manager on its analysis
+                        // thread (where the frame is alive); here we just relay it to the
+                        // HUD and route warnings to audio.
+                        mgr.driverSceneFlow.collect { scene ->
+                            if (currentSettings.viewMode == ViewMode.DRIVER) {
+                                _driverSceneFlow.value = scene
+                                soundManager.handleScene(scene)
+                            } else if (_driverSceneFlow.value != DriverScene()) {
+                                _driverSceneFlow.value = DriverScene()
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -209,7 +240,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (hadManager && owner != null && view != null &&
             owner.lifecycle.currentState.isAtLeast(Lifecycle.State.INITIALIZED)
         ) {
-            val mgr = CameraManager(getApplication(), settings, detector!!, tracker)
+            val mgr = CameraManager(getApplication(), settings, detector!!, tracker, driverSceneBuilder)
             cameraManager = mgr
             mgr.bindCamera(owner, view)
         }
@@ -252,7 +283,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (!loadDetector(currentSettings)) return
             detector!!
         }
-        val mgr = CameraManager(getApplication(), currentSettings, d, tracker)
+        // Tear down any previous pipeline first: every Live-view (re)creation calls
+        // this, and without a shutdown the old manager's executor/scope leak and its
+        // analysis thread keeps referencing the previous camera session.
+        cameraManager?.shutdown()
+
+        val mgr = CameraManager(getApplication(), currentSettings, d, tracker, driverSceneBuilder)
         cameraManager = mgr
 
         mgr.bindCamera(lifecycleOwner, previewView)
@@ -312,6 +348,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setGpuEnabled(v: Boolean)        = viewModelScope.launch { settingsRepo.setGpuEnabled(v) }
     fun setClassFilter(ids: Set<Int>)    = viewModelScope.launch { settingsRepo.setClassFilter(ids) }
     fun setViewMode(mode: ViewMode)      = viewModelScope.launch { settingsRepo.setViewMode(mode) }
+    fun setDriverModeHideCamera(v: Boolean) = viewModelScope.launch { settingsRepo.setDriverModeHideCamera(v) }
+    fun setSoundEnabled(v: Boolean)         = viewModelScope.launch { settingsRepo.setSoundEnabled(v) }
+    fun setSoundVolume(v: Float)            = viewModelScope.launch { settingsRepo.setSoundVolume(v) }
     fun resetSettings()                  = viewModelScope.launch { settingsRepo.resetToDefaults() }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────

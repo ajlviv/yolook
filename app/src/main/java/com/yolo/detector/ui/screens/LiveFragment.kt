@@ -1,4 +1,4 @@
-package com.yolo.detector.ui.screens
+﻿package com.yolo.detector.ui.screens
 
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -37,6 +37,7 @@ class LiveFragment : Fragment() {
 
     // Tracked view-mode state for frame display.
     private var currentMode: ViewMode = ViewMode.NORMAL
+    private var currentHideCamera: Boolean = false
     private var displayedBitmap: Bitmap? = null
 
     // Heatmap rendering. Baking is slow (per-pixel), so a single serial worker
@@ -53,6 +54,17 @@ class LiveFragment : Fragment() {
         savedInstanceState: Bundle?,
     ): View {
         _binding = FragmentLiveBinding.inflate(inflater, container, false)
+
+        // This binding is freshly inflated from XML, where the driver-only overlays
+        // (driverIcons / driverHud) are declared `visibility="gone"`. The fragment
+        // instance is REUSED across navigation (Live -> Settings -> Live), so the
+        // cached mode fields still hold the previous values; if we kept them, the
+        // settings-flow re-apply in onViewCreated would early-return and leave the
+        // new binding's overlays GONE вЂ” hiding the Signals bar and driver icons after
+        // returning from Settings. Reset them so applyViewMode() always re-runs fully.
+        currentMode = ViewMode.NORMAL
+        currentHideCamera = false
+
         return binding.root
     }
 
@@ -80,22 +92,42 @@ class LiveFragment : Fragment() {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     viewModel.settingsFlow.collect { settings ->
-                        applyViewMode(settings.viewMode)
+                        applyViewMode(settings.viewMode, settings.driverModeHideCamera)
                     }
                 }
                 launch {
                     viewModel.frameFlow.collect { bitmap ->
+                        if (currentMode == ViewMode.DRIVER) {
+                            // Driver mode shows the HUD + object overlays. With the raw
+                            // preview hidden ("hide camera view"), the dimmed analysis
+                            // frame is the background so the screen is never black;
+                            // otherwise the copies are not displayed and are recycled.
+                            if (bitmap != null) {
+                                if (currentHideCamera) {
+                                    binding.imageFilterPreview.visibility = View.VISIBLE
+                                    commitFrame(bitmap)
+                                } else {
+                                    // Not displayed. Do NOT recycle: the frame is owned by
+                                    // the ViewModel's cached flow state and may be replayed
+                                    // to a recreated view; GC reclaims the unreferenced one.
+                                }
+                            } else if (currentHideCamera) {
+                                clearDisplayedFrame()
+                                binding.imageFilterPreview.visibility = View.GONE
+                            }
+                            return@collect
+                        }
                         if (bitmap != null) {
                             // Frame copies are only emitted while a filtered mode is
                             // active, so the coverage overlay must be on. Keying this
                             // off frame arrival instead of the async settingsFlow
                             // closes the startup/switch gap where the camera is already
-                            // filtering but applyViewMode() hasn't run yet — otherwise
+                            // filtering but applyViewMode() hasn't run yet вЂ” otherwise
                             // the raw camera feed shows through during that window.
                             binding.imageFilterPreview.visibility = View.VISIBLE
                             when (currentMode) {
                                 ViewMode.HEATMAP -> onHeatmapFrame(bitmap)
-                                ViewMode.NORMAL -> bitmap.recycle() // camera filtered, UI not yet updated
+                                ViewMode.NORMAL -> { /* stale copy; let GC reclaim it */ }
                                 else -> commitFrame(bitmap)
                             }
                         } else if (currentMode == ViewMode.NORMAL) {
@@ -108,7 +140,16 @@ class LiveFragment : Fragment() {
                 }
                 launch {
                     viewModel.detectionFlow.collect { detections ->
-                        binding.overlay.setDetections(detections)
+                        if (currentMode == ViewMode.DRIVER) {
+                            binding.driverIcons.setDetections(detections)
+                        } else {
+                            binding.overlay.setDetections(detections)
+                        }
+                    }
+                }
+                launch {
+                    viewModel.driverSceneFlow.collect { scene ->
+                        binding.driverHud.setScene(scene)
                     }
                 }
                 launch {
@@ -142,20 +183,54 @@ class LiveFragment : Fragment() {
         }
     }
     /** Switches between the raw preview and the filtered frame renderer overlay. */
-    private fun applyViewMode(mode: ViewMode) {
-        if (mode == currentMode) return
-        android.util.Log.i("ViewMode", "applyViewMode=$mode")
+    private fun applyViewMode(mode: ViewMode, hideCamera: Boolean) {
+        val modeChanged = mode != currentMode
+        val hideChanged = hideCamera != currentHideCamera
+        if (!modeChanged && !hideChanged) return
+        android.util.Log.i("ViewMode", "applyViewMode=$mode hideCamera=$hideCamera")
         currentMode = mode
+        currentHideCamera = hideCamera
 
-        // Full reset: releases the previous mode's frames and stops any bake.
-        clearDisplayedFrame()
+        if (modeChanged) {
+            // Full reset: releases the previous mode's frames and stops any bake.
+            clearDisplayedFrame()
+        }
 
-        binding.imageFilterPreview.colorFilter = when (mode) {
-            ViewMode.BLACK_AND_WHITE -> ViewModeEffects.blackAndWhiteColorFilter()
-            ViewMode.INVERT -> ViewModeEffects.invertColorFilter()
+        val isDriver = mode == ViewMode.DRIVER
+        val driverHidden = isDriver && hideCamera
+
+        // Filtered renderer is used by the GPU color-matrix filters (B&W / Invert),
+        // the heatmap path, and the dimmed driver background when the camera view
+        // is hidden — so the driver never faces an empty black screen.
+        val useFilterPreview = mode == ViewMode.BLACK_AND_WHITE ||
+                mode == ViewMode.INVERT ||
+                mode == ViewMode.HEATMAP ||
+                driverHidden
+
+        binding.imageFilterPreview.colorFilter = when {
+            mode == ViewMode.BLACK_AND_WHITE -> ViewModeEffects.blackAndWhiteColorFilter()
+            mode == ViewMode.INVERT -> ViewModeEffects.invertColorFilter()
+            driverHidden -> ViewModeEffects.dimColorFilter()
             else -> null
         }
-        binding.imageFilterPreview.visibility = if (mode != ViewMode.NORMAL) View.VISIBLE else View.GONE
+        binding.imageFilterPreview.visibility = if (useFilterPreview) View.VISIBLE else View.GONE
+
+        // Bounding-box overlay only in non-DRIVER modes; driver uses icons instead.
+        binding.overlay.visibility = if (isDriver) View.GONE else View.VISIBLE
+
+        // Driver-mode HUD overlays.
+        binding.driverIcons.visibility = if (isDriver) View.VISIBLE else View.GONE
+        binding.driverHud.visibility = if (isDriver) View.VISIBLE else View.GONE
+        // With the camera hidden, render the detected objects as visible boxes too.
+        binding.driverIcons.setRenderBoxes(isDriver && hideCamera)
+
+        // Camera preview: in driver hidden mode the opaque filtered view fully covers
+        // the preview, so the user never sees it. It must still stay "visible" to the
+        // framework though — setting it GONE destroys the PreviewView's surface and the
+        // capture session (Preview + ImageAnalysis) then fails to configure with
+        // "Unable to configure camera, timeout!", which stops ALL frames: no
+        // recognition, no HUD, permanent black screen.
+        binding.previewView.visibility = View.VISIBLE
     }
 
     /**
@@ -163,7 +238,9 @@ class LiveFragment : Fragment() {
      * hands it to the serial baker. Owns [frame] on entry; the baker recycles it.
      */
     private fun onHeatmapFrame(frame: Bitmap) {
-        pendingHeatmapFrame?.recycle()
+        // Do NOT recycle the previous pending frame: it is (or was) the flow's
+        // cached value and may be replayed to a recreated view. Drop the
+        // reference and let GC reclaim it.
         pendingHeatmapFrame = frame
         ensureHeatmapWorker()
     }
@@ -209,8 +286,10 @@ class LiveFragment : Fragment() {
                     holder[0]?.recycle()
                     throw e
                 } finally {
-                    // We always own the source frame here; recycle it in every path.
-                    frame.recycle()
+                    // Drop the source frame without recycling: it is (or was) the
+                    // flow's cached value and must remain valid for replay into a
+                    // freshly created view. GC reclaims it once unreferenced.
+                    frame
                 }
             }
         } finally {
@@ -224,22 +303,27 @@ class LiveFragment : Fragment() {
     private fun commitFrame(img: Bitmap) {
         android.util.Log.i("ViewMode", "display frame ${img.width}x${img.height}")
         binding.imageFilterPreview.setImageBitmap(img)
+        // The replaced bitmap was only referenced by the ImageView and us, so
+        // recycling it here is safe — the flow has already moved past it.
         val old = displayedBitmap
         displayedBitmap = img
         old?.recycle()
     }
 
-    /** Releases all owned frame state and clears the filtered image view. */
+    /** Releases owned frame state and clears the filtered image view. */
     private fun clearDisplayedFrame() {
         heatmapWorker?.cancel()
         heatmapWorker = null
-        pendingHeatmapFrame?.recycle()
+        // pendingHeatmapFrame is flow-owned (cached by the ViewModel's StateFlow) —
+        // drop the reference without recycling so a replayed value stays drawable.
         pendingHeatmapFrame = null
         binding.imageFilterPreview.setImageBitmap(null)
         binding.imageFilterPreview.colorFilter = null
-        val old = displayedBitmap
+        // Do NOT recycle the displayed bitmap: the ViewModel's StateFlow still
+        // caches it and replays it to freshly created collectors (e.g. after the
+        // Settings round-trip). Recycling here poisoned the replay and produced
+        // a permanently black screen. Drop the reference; GC reclaims it.
         displayedBitmap = null
-        old?.recycle()
     }
 
     private fun captureAndSaveSnapshot() {
@@ -293,9 +377,11 @@ class LiveFragment : Fragment() {
         super.onDestroyView()
         heatmapWorker?.cancel()
         heatmapWorker = null
-        pendingHeatmapFrame?.recycle()
+        // Flow-owned bitmaps (pendingHeatmapFrame, displayedBitmap) stay unrecycled:
+        // the ViewModel's StateFlow still caches them for replay into the next view.
         pendingHeatmapFrame = null
-        displayedBitmap?.recycle()
+        // displayedBitmap is flow-owned and still cached by the ViewModel's
+        // StateFlow — it must stay valid for replay into a recreated view.
         displayedBitmap = null
         _binding = null
     }

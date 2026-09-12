@@ -10,6 +10,7 @@ On-device real-time object detection for Android. YOLook runs YOLOv8 through Ten
 - **Detection history** - In-memory rolling list of the last 500 detections with label, track ID, confidence, and timestamp.
 - **Snapshots** - Save the current preview frame as a JPEG to the gallery (`Pictures/YOLO`) via MediaStore.
 - **Hardware acceleration** - GPU delegate with graceful fallback to NNAPI, then CPU.
+- **Driver mode** - A dash-cam style HUD with **icon-only object markers** (no bounding boxes), a **top-right traffic-light panel** that recovers each lane's red/yellow/green signal from the image, **sign recognition** drawn above the lights, alerts when **people are on the road**, optional **audio warnings** (toggle in Settings), and an option to **hide the camera preview** entirely and render only icons/HUD.
 
 ## Screens
 

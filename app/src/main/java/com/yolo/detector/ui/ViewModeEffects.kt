@@ -38,6 +38,23 @@ object ViewModeEffects {
         )
         return ColorMatrixColorFilter(m)
     }
+
+    /**
+     * GPU color-matrix that scales RGB by [brightness] (alpha untouched), used to
+     * darken the driver background when "hide camera view" is on so it reads as a
+     * driver-assist scene instead of a raw preview (and never a black screen).
+     */
+    fun dimColorFilter(brightness: Float = 0.35f): ColorMatrixColorFilter {
+        val m = ColorMatrix(
+            floatArrayOf(
+                brightness, 0f, 0f, 0f, 0f,
+                0f, brightness, 0f, 0f, 0f,
+                0f, 0f, brightness, 0f, 0f,
+                0f, 0f, 0f, 1f, 0f,
+            )
+        )
+        return ColorMatrixColorFilter(m)
+    }
 }
 
 /** Full alpha for baked pixels (255 shl 24 stays Int, unlike the Long literal 0xFF000000). */

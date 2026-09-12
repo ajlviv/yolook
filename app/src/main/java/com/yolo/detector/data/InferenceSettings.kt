@@ -27,4 +27,13 @@ data class InferenceSettings(
 
     /** Visual filter applied to the live camera preview. */
     val viewMode: ViewMode = ViewMode.NORMAL,
+
+    /** Driver mode: hide the raw camera preview and render only object icons + HUD. */
+    val driverModeHideCamera: Boolean = false,
+
+    /** Driver mode: whether audible warnings are enabled. */
+    val soundEnabled: Boolean = true,
+
+    /** Driver mode: warning sound volume in [0, 1]. */
+    val soundVolume: Float = 1f,
 )

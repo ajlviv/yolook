@@ -40,6 +40,28 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toTopOf="parent" />
 
+    <!-- Driver-mode overlay: icon-only object markers (no bounding boxes). -->
+    <com.yolo.detector.ui.overlay.DriverObjectIconsOverlay
+        android:id="@+id/driverIcons"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
+    <!-- Driver-mode HUD: signs (above) + traffic-light signals (top-right). -->
+    <com.yolo.detector.ui.overlay.DriverHudOverlay
+        android:id="@+id/driverHud"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
     <!-- Performance Stats Bar -->
     <TextView
         android:id="@+id/tvStats"

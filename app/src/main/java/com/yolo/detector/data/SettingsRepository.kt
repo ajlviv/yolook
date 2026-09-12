@@ -43,6 +43,9 @@ class SettingsRepository(context: Context) {
         val CLASS_FILTER_IDS = stringPreferencesKey("class_filter_ids")
         // Stored as the enum name, e.g. "HEATMAP"
         val VIEW_MODE = stringPreferencesKey("view_mode")
+        val DRIVER_HIDE_CAMERA = booleanPreferencesKey("driver_hide_camera")
+        val SOUND_ENABLED = booleanPreferencesKey("sound_enabled")
+        val SOUND_VOLUME = floatPreferencesKey("sound_volume")
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -70,6 +73,9 @@ class SettingsRepository(context: Context) {
             enableGpuDelegate = this[Keys.GPU_ENABLED] ?: true,
             classFilter = filterIds,
             viewMode = this[Keys.VIEW_MODE]?.enumValueOrDefault() ?: ViewMode.NORMAL,
+            driverModeHideCamera = this[Keys.DRIVER_HIDE_CAMERA] ?: false,
+            soundEnabled = this[Keys.SOUND_ENABLED] ?: true,
+            soundVolume = (this[Keys.SOUND_VOLUME] ?: 1f).coerceIn(0f, 1f),
         )
     }
 
@@ -104,6 +110,18 @@ class SettingsRepository(context: Context) {
 
     suspend fun setViewMode(mode: ViewMode) {
         dataStore.edit { it[Keys.VIEW_MODE] = mode.name }
+    }
+
+    suspend fun setDriverModeHideCamera(value: Boolean) {
+        dataStore.edit { it[Keys.DRIVER_HIDE_CAMERA] = value }
+    }
+
+    suspend fun setSoundEnabled(value: Boolean) {
+        dataStore.edit { it[Keys.SOUND_ENABLED] = value }
+    }
+
+    suspend fun setSoundVolume(value: Float) {
+        dataStore.edit { it[Keys.SOUND_VOLUME] = value.coerceIn(0f, 1f) }
     }
 
     /** Resets all settings to factory defaults by clearing the DataStore. */
