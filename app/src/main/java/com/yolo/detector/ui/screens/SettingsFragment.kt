@@ -15,6 +15,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import com.yolo.detector.data.COCO_LABELS
+import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.VEHICLE_CLASS_IDS
 import com.yolo.detector.data.ViewMode
 import com.yolo.detector.databinding.FragmentSettingsBinding
@@ -41,6 +42,9 @@ class SettingsFragment : Fragment() {
     // re-sync does not re-trigger setViewMode().
     private var currentViewModeOrdinal = ViewMode.NORMAL.ordinal
 
+    // Same guard for the detection-view spinner (see setDetectionView()).
+    private var currentDetectionViewOrdinal = DetectionView.LABELS.ordinal
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -56,6 +60,7 @@ class SettingsFragment : Fragment() {
         displayAppVersion()
         setupClassFilterCheckboxes()
         setupViewModeSpinner()
+        setupDetectionViewSpinner()
         setupListeners()
         observeSettings()
     }
@@ -73,6 +78,25 @@ class SettingsFragment : Fragment() {
                 if (position == currentViewModeOrdinal) return
                 currentViewModeOrdinal = position
                 viewModel.setViewMode(ViewMode.entries[position])
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) {}
+        }
+    }
+
+    private fun setupDetectionViewSpinner() {
+        val views = resources.getStringArray(R.array.detection_views).toList()
+        binding.spDetectionView.adapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            views,
+        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+        binding.spDetectionView.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                if (position == currentDetectionViewOrdinal) return
+                currentDetectionViewOrdinal = position
+                viewModel.setDetectionView(DetectionView.entries[position])
             }
 
             override fun onNothingSelected(parent: AdapterView<*>) {}
@@ -190,6 +214,9 @@ class SettingsFragment : Fragment() {
 
                     currentViewModeOrdinal = settings.viewMode.ordinal
                     binding.spViewMode.setSelection(settings.viewMode.ordinal)
+
+                    currentDetectionViewOrdinal = settings.detectionView.ordinal
+                    binding.spDetectionView.setSelection(settings.detectionView.ordinal)
                 }
             }
         }

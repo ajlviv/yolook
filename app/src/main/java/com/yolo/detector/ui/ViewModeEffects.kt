@@ -172,27 +172,41 @@ fun Bitmap.toLuminance(): IntArray {
 
 
 /**
- * Sobel edge detection over a luminance image, masked to normalised detection
- * boxes: only pixels inside at least one box can be edges; everything else is
- * black. Luminance is row-major ([y * w + x]); boxes use normalised [0,1]
- * coords. Pure function — unit-testable without a device.
+ * Returns a copy of this bitmap with everything outside the normalised
+ * detection [boxes] blacked out ("objects only"). Baked at reduced resolution
+ * for speed, scaled up by the ImageView.
  *
- * @param threshold gradient-magnitude cutoff (see [EDGE_THRESHOLD]).
- * @return row-major packed ARGB pixels (green edge on opaque black).
+ * `this` is not modified or recycled; the caller owns the returned bitmap.
+ *
+ * @param downscale 1 = full resolution, 2 = half resolution (4x fewer pixels).
  */
-fun sobelEdgesMasked(
-    luminance: IntArray,
-    w: Int,
-    h: Int,
+fun Bitmap.applyObjectsOnlyMask(
     boxes: List<RectF>,
-    threshold: Int = EDGE_THRESHOLD,
-): IntArray {
-    val out = IntArray(w * h)
-    if (w < 3 || h < 3) {
-        out.fill(Color.BLACK)
-        return out
+    downscale: Int = 2,
+): Bitmap {
+    val tw = (width / downscale).coerceAtLeast(1)
+    val th = (height / downscale).coerceAtLeast(1)
+    val small = if (tw != width || th != height) {
+        Bitmap.createScaledBitmap(this, tw, th, true)
+    } else {
+        this.copy(Bitmap.Config.ARGB_8888, true)
     }
-    // Precompute the inside-box mask so Sobel runs only where it matters.
+    val mask = boxesMask(tw, th, boxes)
+    val pixels = IntArray(tw * th)
+    small.getPixels(pixels, 0, tw, 0, 0, tw, th)
+    for (i in pixels.indices) {
+        if (!mask[i]) pixels[i] = Color.BLACK
+    }
+    small.setPixels(pixels, 0, tw, 0, 0, tw, th)
+    return small
+}
+
+/**
+ * Builds the normalised-boxes coverage mask used by [sobelEdgesMasked] and
+ * [applyObjectsOnlyMask]: row-major booleans, true = pixel inside a box.
+ * Pure function — unit-testable without a device.
+ */
+fun boxesMask(w: Int, h: Int, boxes: List<RectF>): BooleanArray {
     val inside = BooleanArray(w * h)
     for (box in boxes) {
         val left = (box.left * w).toInt().coerceIn(0, w - 1)
@@ -205,10 +219,38 @@ fun sobelEdgesMasked(
             }
         }
     }
+    return inside
+}
+
+/**
+ * Sobel edge detection over a luminance image, masked to normalised detection
+ * boxes when [boxes] is non-null: only pixels inside at least one box can be
+ * edges; everything else is black. Pass null to run edges over the entire
+ * screen (used by the Edge Detection view mode). Luminance is row-major
+ * ([y * w + x]); boxes use normalised [0,1] coords. Pure function —
+ * unit-testable without a device.
+ *
+ * @param threshold gradient-magnitude cutoff (see [EDGE_THRESHOLD]).
+ * @return row-major packed ARGB pixels (green edge on opaque black).
+ */
+fun sobelEdgesMasked(
+    luminance: IntArray,
+    w: Int,
+    h: Int,
+    boxes: List<RectF>?,
+    threshold: Int = EDGE_THRESHOLD,
+): IntArray {
+    val out = IntArray(w * h)
+    if (w < 3 || h < 3) {
+        out.fill(Color.BLACK)
+        return out
+    }
+    // Null boxes = full screen: every pixel is a candidate edge.
+    val inside = boxes?.let { boxesMask(w, h, it) }
     for (y in 0 until h) {
         for (x in 0 until w) {
             val i = y * w + x
-            if (!inside[i]) {
+            if (inside != null && !inside[i]) {
                 out[i] = Color.BLACK
                 continue
             }
@@ -230,16 +272,19 @@ fun sobelEdgesMasked(
 }
 
 /**
- * Returns an "objects only" copy of this bitmap: Sobel edges inside detection
- * boxes drawn in green on a black background; everything outside the boxes is
- * black. Baked at reduced resolution for speed, scaled up by the ImageView.
+ * Returns an edge-rendered copy of this bitmap: Sobel edges in green on a
+ * black background, baked at reduced resolution for speed and scaled up by
+ * the ImageView.
  *
- * `this` is not modified or recycled; the caller owns the returned bitmap.
+ * Pass null [boxes] for full-screen edges (Edge Detection view mode default),
+ * or a box list to mask edges to detections only (used when "Detection view"
+ * is "Only objects"). `this` is not modified or recycled; the caller owns
+ * the returned bitmap.
  *
  * @param downscale 1 = full resolution, 2 = half resolution (4x fewer pixels).
  */
 fun Bitmap.applyEdgeDetection(
-    detections: List<Detection>,
+    boxes: List<RectF>?,
     downscale: Int = 2,
     threshold: Int = EDGE_THRESHOLD,
 ): Bitmap {
@@ -251,7 +296,7 @@ fun Bitmap.applyEdgeDetection(
         this.copy(Bitmap.Config.ARGB_8888, true)
     }
     val gray = small.toLuminance()
-    val pixels = sobelEdgesMasked(gray, tw, th, detections.map { it.bbox }, threshold)
+    val pixels = sobelEdgesMasked(gray, tw, th, boxes, threshold)
     small.setPixels(pixels, 0, tw, 0, 0, tw, th)
     return small
 }

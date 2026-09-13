@@ -10,12 +10,14 @@ import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.ViewMode
 import com.yolo.detector.databinding.FragmentLiveBinding
 import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.ui.ViewModeEffects
 import com.yolo.detector.ui.applyEdgeDetection
 import com.yolo.detector.ui.applyHeatmap
+import com.yolo.detector.ui.applyObjectsOnlyMask
 import com.yolo.detector.ui.countByClass
 import com.yolo.detector.ui.formatCountStats
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +44,9 @@ class LiveFragment : Fragment() {
     private var currentMode: ViewMode = ViewMode.NORMAL
     private var displayedBitmap: Bitmap? = null
 
+    // Tracked detection-view (Settings "Detection view").
+    private var currentDetectionView: DetectionView = DetectionView.LABELS
+
     // Heatmap rendering. Baking is slow (per-pixel), so a single serial worker
     // bakes the newest pending frame and drops intermediate ones. This lets the
     // heatmap update at the bake rate regardless of the analysis FPS. All pending
@@ -55,6 +60,11 @@ class LiveFragment : Fragment() {
     // thread, so masking boxes align with the baked frame's inference pass.
     private var pendingEdgeFrame: Bitmap? = null
     private var edgeWorker: Job? = null
+
+    // Objects-only detection view: same worker pattern; reuses the edge
+    // worker when Edge Detection view is active, otherwise its own.
+    private var pendingObjectsOnlyFrame: Bitmap? = null
+    private var objectsOnlyWorker: Job? = null
     private var latestDetections: List<com.yolo.detector.data.Detection> = emptyList()
 
     // Count toggle: display-only flag. When on, boxes show per-object running
@@ -73,6 +83,16 @@ class LiveFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+
+        // Sync the overlay before any collector runs: the ViewModel is shared
+        // (activity-scoped), so its settings snapshot already holds the
+        // persisted values. Without this, fresh fragment views start at
+        // LABELS and draw a stale box+label frame until the async
+        // settingsFlow emits — visible as a flicker when OBJECTS_ONLY
+        // (or any non-default detection view) is persisted.
+        binding.overlay.detectionView = viewModel.currentSettingsSnapshot.detectionView
+        currentMode = viewModel.currentSettingsSnapshot.viewMode
+        currentDetectionView = viewModel.currentSettingsSnapshot.detectionView
 
         // Bind camera to this fragment's lifecycle; preview goes into the PreviewView.
         viewModel.bindCamera(viewLifecycleOwner, binding.previewView)
@@ -107,6 +127,7 @@ class LiveFragment : Fragment() {
                 launch {
                     viewModel.settingsFlow.collect { settings ->
                         applyViewMode(settings.viewMode)
+                        applyDetectionView(settings.detectionView)
                     }
                 }
                 launch {
@@ -119,15 +140,18 @@ class LiveFragment : Fragment() {
                             // filtering but applyViewMode() hasn't run yet — otherwise
                             // the raw camera feed shows through during that window.
                             binding.imageFilterPreview.visibility = View.VISIBLE
-                            when (currentMode) {
-                                ViewMode.HEATMAP -> onHeatmapFrame(bitmap)
-                                ViewMode.EDGE -> onEdgeFrame(bitmap)
-                                ViewMode.NORMAL -> bitmap.recycle() // camera filtered, UI not yet updated
+                            when {
+                                currentMode == ViewMode.HEATMAP -> onHeatmapFrame(bitmap)
+                                currentMode == ViewMode.EDGE -> onEdgeFrame(bitmap)
+                                currentDetectionView == DetectionView.OBJECTS_ONLY ->
+                                    onObjectsOnlyFrame(bitmap)
+                                currentMode == ViewMode.NORMAL -> bitmap.recycle() // camera filtered, UI not yet updated
                                 else -> commitFrame(bitmap)
                             }
-                        } else if (currentMode == ViewMode.NORMAL) {
-                            // Camera switched back to the plain preview: mirror it by
-                            // clearing the filtered image and hiding the overlay.
+                        } else if (currentMode == ViewMode.NORMAL &&
+                            currentDetectionView != DetectionView.OBJECTS_ONLY) {
+                            // Camera switched back to the plain preview with no
+                            // masking active: mirror it by clearing the filtered image.
                             clearDisplayedFrame()
                             binding.imageFilterPreview.visibility = View.GONE
                         }
@@ -137,7 +161,7 @@ class LiveFragment : Fragment() {
                     viewModel.detectionFlow.collect { detections ->
                         binding.overlay.setDetections(detections)
                         latestDetections = detections
-                        if (countingEnabled) refreshCountHud()
+                        if (showCountHud()) refreshCountHud()
                     }
                 }
                 launch {
@@ -146,7 +170,7 @@ class LiveFragment : Fragment() {
                         // on new frames too (per-frame per-class counts).
                         lastStatsFps = stats.fps
                         lastStatsMs = stats.inferenceMs
-                        if (countingEnabled) {
+                        if (showCountHud()) {
                             refreshCountHud()
                         } else {
                             binding.tvStats.text = "FPS: ${"%.1f".format(stats.fps)}  " +
@@ -180,7 +204,14 @@ class LiveFragment : Fragment() {
     }
     /** Switches between the raw preview and the filtered frame renderer overlay. */
     private fun applyViewMode(mode: ViewMode) {
-        if (mode == currentMode) return
+        if (mode == currentMode) {
+            // Still sync visuals: a fresh fragment view pre-seeds currentMode
+            // from the ViewModel snapshot, so without this the B&W/Invert
+            // color filter and overlay visibility would never be applied and
+            // those modes would look like Normal.
+            syncViewModeVisuals()
+            return
+        }
         android.util.Log.i("ViewMode", "applyViewMode=$mode")
         currentMode = mode
 
@@ -189,13 +220,67 @@ class LiveFragment : Fragment() {
         // display switch, independent of the Settings view mode.
         clearDisplayedFrame()
 
-        binding.imageFilterPreview.colorFilter = when (mode) {
+        syncViewModeVisuals()
+    }
+
+    /**
+     * Applies the ImageView color filter and visibility for [currentMode].
+     * Split out so fresh views (which pre-sync [currentMode] in onViewCreated)
+     * still get the B&W/Invert GPU filter and the overlay visibility.
+     */
+    private fun syncViewModeVisuals() {
+        binding.imageFilterPreview.colorFilter = when (currentMode) {
             ViewMode.BLACK_AND_WHITE -> ViewModeEffects.blackAndWhiteColorFilter()
             ViewMode.INVERT -> ViewModeEffects.invertColorFilter()
             else -> null
         }
-        binding.imageFilterPreview.visibility = if (mode != ViewMode.NORMAL) View.VISIBLE else View.GONE
+        binding.imageFilterPreview.visibility =
+            if (currentMode != ViewMode.NORMAL || currentDetectionView == DetectionView.OBJECTS_ONLY) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
     }
+
+    /**
+     * Applies the Settings "Detection view". OBJECTS_ONLY additionally forces
+     * the filtered-frame path (black outside boxes) even in [ViewMode.NORMAL];
+     * the other options only change the overlay labels and HUD.
+     *
+     * The overlay is synced unconditionally (not only on change) so a fresh
+     * fragment view that pre-synced from [MainViewModel.currentSettingsSnapshot]
+     * in onViewCreated can never drift from the collector state.
+     */
+    private fun applyDetectionView(view: DetectionView) {
+        binding.overlay.detectionView = view
+        if (view == currentDetectionView) return
+        android.util.Log.i("ViewMode", "applyDetectionView=$view")
+        currentDetectionView = view
+
+        // Boxes-only masking needs its own bake loop outside baked view modes.
+        if (view == DetectionView.OBJECTS_ONLY) {
+            binding.imageFilterPreview.visibility = View.VISIBLE
+        } else {
+            objectsOnlyWorker?.cancel()
+            objectsOnlyWorker = null
+            pendingObjectsOnlyFrame?.recycle()
+            pendingObjectsOnlyFrame = null
+            if (currentMode == ViewMode.NORMAL) {
+                // Back to the raw preview: drop any masked frame.
+                clearDisplayedFrame()
+                binding.imageFilterPreview.visibility = View.GONE
+            }
+        }
+
+        if (showCountHud()) refreshCountHud()
+    }
+
+    /**
+     * Whether the HUD shows per-frame per-class counts: the Live-tab "C"
+     * toggle or Settings "Detection view" = "Box with count".
+     */
+    private fun showCountHud(): Boolean =
+        countingEnabled || currentDetectionView == DetectionView.COUNT
 
     /**
      * Receives a heatmap-mode frame. Keeps only the newest frame (drop-oldest) and
@@ -259,7 +344,7 @@ class LiveFragment : Fragment() {
         }
     }
 
-    // ── Edge view (objects-only edges) ─────────────────────────────────────
+    // ── Edge view (full-screen edges) + objects-only masking ────────────────
 
     /** Latest stats values, reused to re-render the count HUD on new frames. */
     private var lastStatsFps: Float = 0f
@@ -267,11 +352,11 @@ class LiveFragment : Fragment() {
 
     /**
      * Re-renders the HUD from this frame's detections. Main thread. When the
-     * count toggle is off this is a no-op (the stats collector draws the
+     * count HUD is off this is a no-op (the stats collector draws the
      * default single line itself).
      */
     private fun refreshCountHud() {
-        if (!countingEnabled) return
+        if (!showCountHud()) return
         binding.tvStats.text = formatCountStats(lastStatsFps, lastStatsMs, countByClass(latestDetections))
     }
 
@@ -295,17 +380,22 @@ class LiveFragment : Fragment() {
     }
 
     /**
-     * Serial edge loop (runs on main; bakes on a background thread). Bakes
-     * the latest pending frame masked to the detections snapshot taken when
-     * the frame arrived, then commits it. Same main-confined ownership pattern
-     * as the heatmap loop, so the drop-oldest recycle cannot race the bake.
+     * Serial edge loop (runs on main; bakes on a background thread). Renders
+     * full-screen edges, or edges masked to detections when "Detection view"
+     * is "Only objects". Same main-confined ownership pattern as the heatmap
+     * loop, so the drop-oldest recycle cannot race the bake.
      */
     private suspend fun runEdgeLoop() {
         try {
             while (currentMode == ViewMode.EDGE) {
                 val frame = pendingEdgeFrame ?: return
                 pendingEdgeFrame = null
-                val boxes = latestDetections
+                // Masked only for "Only objects"; otherwise the whole screen.
+                val boxes = if (currentDetectionView == DetectionView.OBJECTS_ONLY) {
+                    latestDetections.map { it.bbox }
+                } else {
+                    null
+                }
 
                 val holder = arrayOfNulls<Bitmap>(1)
                 try {
@@ -331,6 +421,63 @@ class LiveFragment : Fragment() {
         }
     }
 
+    /**
+     * Receives an objects-only frame (Normal/B&W/Invert view + "Detection
+     * view" = "Only objects"). Same drop-oldest ownership as [onEdgeFrame].
+     */
+    private fun onObjectsOnlyFrame(frame: Bitmap) {
+        pendingObjectsOnlyFrame?.recycle()
+        pendingObjectsOnlyFrame = frame
+        ensureObjectsOnlyWorker()
+    }
+
+    /** Starts the objects-only baker if it is not already running. */
+    private fun ensureObjectsOnlyWorker() {
+        if (objectsOnlyWorker != null) return
+        objectsOnlyWorker = viewLifecycleOwner.lifecycleScope.launch {
+            runObjectsOnlyLoop()
+        }
+    }
+
+    /**
+     * Serial objects-only loop: blacks out everything outside detection boxes,
+     * preserving the active B&W/Invert color filter via the ImageView (the
+     * mask runs on the unfiltered frame, the filter is applied by the GPU at
+     * draw time). Exits when the detection view or view mode changes.
+     */
+    private suspend fun runObjectsOnlyLoop() {
+        try {
+            while (currentDetectionView == DetectionView.OBJECTS_ONLY &&
+                currentMode != ViewMode.EDGE && currentMode != ViewMode.HEATMAP) {
+                val frame = pendingObjectsOnlyFrame ?: return
+                pendingObjectsOnlyFrame = null
+                val boxes = latestDetections.map { it.bbox }
+
+                val holder = arrayOfNulls<Bitmap>(1)
+                try {
+                    withContext(Dispatchers.Default) {
+                        holder[0] = frame.applyObjectsOnlyMask(boxes)
+                    }
+                    val baked = holder[0] ?: return
+                    if (currentDetectionView != DetectionView.OBJECTS_ONLY ||
+                        currentMode == ViewMode.EDGE || currentMode == ViewMode.HEATMAP ||
+                        !currentCoroutineContext().isActive) {
+                        baked.recycle()
+                        return
+                    }
+                    commitFrame(baked)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    holder[0]?.recycle()
+                    throw e
+                } finally {
+                    frame.recycle()
+                }
+            }
+        } finally {
+            if (currentCoroutineContext()[Job] == objectsOnlyWorker) objectsOnlyWorker = null
+        }
+    }
+
     /** Takes ownership of [img] and shows it as the current filtered frame. */
     private fun commitFrame(img: Bitmap) {
         android.util.Log.i("ViewMode", "display frame ${img.width}x${img.height}")
@@ -350,6 +497,10 @@ class LiveFragment : Fragment() {
         edgeWorker = null
         pendingEdgeFrame?.recycle()
         pendingEdgeFrame = null
+        objectsOnlyWorker?.cancel()
+        objectsOnlyWorker = null
+        pendingObjectsOnlyFrame?.recycle()
+        pendingObjectsOnlyFrame = null
         binding.imageFilterPreview.setImageBitmap(null)
         binding.imageFilterPreview.colorFilter = null
         val old = displayedBitmap
@@ -358,9 +509,12 @@ class LiveFragment : Fragment() {
     }
 
     private fun captureAndSaveSnapshot() {
-        val isFiltered = currentMode != ViewMode.NORMAL
+        // Masked when a baked view renders the frame (any view mode, or
+        // OBJECTS_ONLY masking over the Normal preview).
+        val isFiltered = currentMode != ViewMode.NORMAL ||
+                currentDetectionView == DetectionView.OBJECTS_ONLY
         val frame = if (isFiltered) {
-            // Filtered view: snapshot the displayed (already-heatmapped) frame.
+            // Filtered view: snapshot the displayed (already-baked) frame.
             displayedBitmap?.copy(Bitmap.Config.ARGB_8888, true)
         } else {
             // Capture the raw preview as a single bitmap.
@@ -414,6 +568,10 @@ class LiveFragment : Fragment() {
         edgeWorker = null
         pendingEdgeFrame?.recycle()
         pendingEdgeFrame = null
+        objectsOnlyWorker?.cancel()
+        objectsOnlyWorker = null
+        pendingObjectsOnlyFrame?.recycle()
+        pendingObjectsOnlyFrame = null
         displayedBitmap?.recycle()
         displayedBitmap = null
         _binding = null

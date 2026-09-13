@@ -43,6 +43,8 @@ class SettingsRepository(context: Context) {
         val CLASS_FILTER_IDS = stringPreferencesKey("class_filter_ids")
         // Stored as the enum name, e.g. "HEATMAP"
         val VIEW_MODE = stringPreferencesKey("view_mode")
+        // Stored as the enum name, e.g. "COUNT"
+        val DETECTION_VIEW = stringPreferencesKey("detection_view")
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -69,12 +71,16 @@ class SettingsRepository(context: Context) {
             inferenceRateFps = this[Keys.INFERENCE_FPS] ?: 10,
             enableGpuDelegate = this[Keys.GPU_ENABLED] ?: true,
             classFilter = filterIds,
-            viewMode = this[Keys.VIEW_MODE]?.enumValueOrDefault() ?: ViewMode.NORMAL,
+            viewMode = this[Keys.VIEW_MODE]?.toViewMode() ?: ViewMode.NORMAL,
+            detectionView = this[Keys.DETECTION_VIEW]?.toDetectionView() ?: DetectionView.LABELS,
         )
     }
 
-    private fun String.enumValueOrDefault(): ViewMode =
+    private fun String.toViewMode(): ViewMode =
         ViewMode.entries.firstOrNull { it.name == this } ?: ViewMode.NORMAL
+
+    private fun String.toDetectionView(): DetectionView =
+        DetectionView.entries.firstOrNull { it.name == this } ?: DetectionView.LABELS
 
     // ── Write ─────────────────────────────────────────────────────────────────
 
@@ -104,6 +110,10 @@ class SettingsRepository(context: Context) {
 
     suspend fun setViewMode(mode: ViewMode) {
         dataStore.edit { it[Keys.VIEW_MODE] = mode.name }
+    }
+
+    suspend fun setDetectionView(view: DetectionView) {
+        dataStore.edit { it[Keys.DETECTION_VIEW] = view.name }
     }
 
     /** Resets all settings to factory defaults by clearing the DataStore. */

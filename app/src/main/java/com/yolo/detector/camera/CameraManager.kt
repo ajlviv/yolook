@@ -8,6 +8,7 @@ import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import com.yolo.detector.data.Detection
+import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.InferenceSettings
 import com.yolo.detector.inference.toRgbBitmap
 import com.yolo.detector.data.ViewMode
@@ -169,11 +170,14 @@ class CameraManager(
 
         scope.launch {
             try {
-                // For filtered view modes, hand a copy of the frame to the UI for display.
-                // Ownership of the copy moves to the consumer; the inference bitmap is
-                // still recycled below. NORMAL mode keeps the smooth PreviewView instead.
-                if (settings.viewMode != ViewMode.NORMAL) {
-                    android.util.Log.i("ViewMode", "emit frame ${settings.viewMode}")
+                // For filtered view modes (or OBJECTS_ONLY masking), hand a copy
+                // of the frame to the UI for display. Ownership of the copy moves
+                // to the consumer; the inference bitmap is still recycled below.
+                // NORMAL mode without masking keeps the smooth PreviewView instead.
+                val needsFrame = settings.viewMode != ViewMode.NORMAL ||
+                        settings.detectionView == DetectionView.OBJECTS_ONLY
+                if (needsFrame) {
+                    android.util.Log.i("ViewMode", "emit frame ${settings.viewMode}/${settings.detectionView}")
                     _frameFlow.value = bitmap.copy(Bitmap.Config.ARGB_8888, true)
                 } else if (_frameFlow.value != null) {
                     _frameFlow.value = null
