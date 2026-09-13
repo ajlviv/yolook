@@ -6,6 +6,7 @@ import android.util.AttributeSet
 import android.view.View
 import com.yolo.detector.data.COCO_LABELS
 import com.yolo.detector.data.Detection
+import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.VEHICLE_CLASS_IDS
 import com.yolo.detector.data.labelFor
 
@@ -14,10 +15,15 @@ import com.yolo.detector.data.labelFor
  *
  * Boxes are drawn in normalised coordinates [0,1] that are scaled to the view's pixel size.
  *
- * Two label styles (see [countLabelsEnabled]):
- * - Detect style: label above the box — class label, track ID, confidence.
- * - Count style:  per-object running number drawn **inside** the box
- *   ("1", "2", … in frame order) with per-class counts shown in the stats HUD.
+ * Label rendering follows [DetectionView] (see [detectionView]):
+ * - [DetectionView.LABELS]     — label above the box: class, track ID, confidence.
+ * - [DetectionView.BOX_ONLY]   — box outline only, no labels.
+ * - [DetectionView.COUNT]      — per-object running number drawn **inside** the box
+ *   ("1", "2", … in frame order); per-class counts are shown in the stats HUD.
+ *   Same visuals as the Live-tab count toggle ("C").
+ * - [DetectionView.OBJECTS_ONLY] — draws nothing; the baked frame (see
+ *   LiveFragment) already blacks out everything outside the boxes, so the
+ *   objects show through with no extra box strokes or labels.
  *
  * Vehicle class colours:
  * - Car (2):         Green  #00E676
@@ -70,9 +76,24 @@ class BoundingBoxOverlay @JvmOverloads constructor(
     private var detections: List<Detection> = emptyList()
 
     /**
-     * When true, boxes show a per-object running number ("1", "2", …) drawn
-     * inside the box instead of the detect-style label above it. This is a
-     * pure display switch — no state is kept, and the view mode is untouched.
+     * How boxes/labels are rendered. [DetectionView.OBJECTS_ONLY] draws nothing
+     * — the frame itself is masked (see LiveFragment), so objects show through
+     * with no extra box strokes or labels.
+     * Kept in sync with the Settings "Detection view" plus the transient
+     * Live-tab count toggle override (see LiveFragment).
+     */
+    var detectionView: DetectionView = DetectionView.LABELS
+        set(value) {
+            if (field != value) {
+                field = value
+                postInvalidate()
+            }
+        }
+
+    /**
+     * Live-tab count toggle override: when true, boxes show per-object running
+     * numbers inside them (same as [DetectionView.COUNT]) without changing the
+     * persisted Settings value. Display-only switch — no state is kept.
      */
     var countLabelsEnabled: Boolean = false
         set(value) {
@@ -90,6 +111,11 @@ class BoundingBoxOverlay @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if (detectionView == DetectionView.OBJECTS_ONLY) {
+            // The baked frame already blacks out everything outside the boxes,
+            // so the objects show through with no extra box strokes or labels.
+            return
+        }
         val w = width.toFloat()
         val h = height.toFloat()
 
@@ -108,9 +134,16 @@ class BoundingBoxOverlay @JvmOverloads constructor(
             boxPaint.color = color
             canvas.drawRect(left, top, right, bottom, boxPaint)
 
-            if (countLabelsEnabled) {
+            // The Live-tab toggle ("C") overrides the Settings value transiently.
+            val showCountNumbers = countLabelsEnabled || detectionView == DetectionView.COUNT
+            if (showCountNumbers) {
                 // ── Count number inside the box ────────────────────────────────
                 drawCountNumber(canvas, index + 1, left, top, right, bottom, color)
+                continue
+            }
+
+            if (detectionView == DetectionView.BOX_ONLY) {
+                // Box outline only — no labels.
                 continue
             }
 

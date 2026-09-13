@@ -80,6 +80,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val settingsFlow: Flow<InferenceSettings> = settingsRepo.settingsFlow
 
+    /** Latest settings snapshot for synchronous reads (updated by the collector above). */
+    val currentSettingsSnapshot: InferenceSettings get() = currentSettings
+
     // ── Settings → pipeline reactivity ────────────────────────────────────────
 
     private var currentSettings: InferenceSettings = InferenceSettings()
@@ -312,6 +315,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setGpuEnabled(v: Boolean)        = viewModelScope.launch { settingsRepo.setGpuEnabled(v) }
     fun setClassFilter(ids: Set<Int>)    = viewModelScope.launch { settingsRepo.setClassFilter(ids) }
     fun setViewMode(mode: ViewMode)      = viewModelScope.launch { settingsRepo.setViewMode(mode) }
+    fun setDetectionView(view: DetectionView) = viewModelScope.launch { settingsRepo.setDetectionView(view) }
     fun resetSettings()                  = viewModelScope.launch { settingsRepo.resetToDefaults() }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────

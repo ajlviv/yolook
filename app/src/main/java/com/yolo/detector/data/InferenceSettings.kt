@@ -27,4 +27,7 @@ data class InferenceSettings(
 
     /** Visual filter applied to the live camera preview. */
     val viewMode: ViewMode = ViewMode.NORMAL,
+
+    /** How detections are drawn on the live overlay and frame. */
+    val detectionView: DetectionView = DetectionView.LABELS,
 )

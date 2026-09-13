@@ -15,6 +15,17 @@
     <string name="settings_gpu_delegate">Use GPU delegate</string>
     <string name="settings_class_filter">Class filter</string>
     <string name="settings_view_mode">View mode</string>
+    <string name="settings_detection_view">Detection view</string>
+    <string name="detection_view_labels">Default (box with class name)</string>
+    <string name="detection_view_box_only">Box only</string>
+    <string name="detection_view_count">Box with count</string>
+    <string name="detection_view_objects_only">Only objects (rest is black)</string>
+    <string-array name="detection_views">
+        <item>@string/detection_view_labels</item>
+        <item>@string/detection_view_box_only</item>
+        <item>@string/detection_view_count</item>
+        <item>@string/detection_view_objects_only</item>
+    </string-array>
     <string name="settings_reset">Reset to defaults</string>
     <string name="view_mode_normal">Normal</string>
     <string name="view_mode_black_white">Black &amp; White</string>

@@ -168,6 +168,22 @@
             android:prompt="@string/view_mode_normal"
             app:backgroundTint="#2C2C2C" />
 
+        <!-- Detection View -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_detection_view"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
+        <Spinner
+            android:id="@+id/spDetectionView"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:prompt="@string/detection_view_labels"
+            app:backgroundTint="#2C2C2C" />
+
         <!-- Class Filters -->
         <TextView
             android:layout_width="match_parent"

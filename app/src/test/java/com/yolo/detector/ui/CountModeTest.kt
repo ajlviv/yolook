@@ -10,8 +10,9 @@ import org.junit.Test
 
 /**
  * Unit tests for the Live-tab count toggle ([countByClass],
- * [formatCountStats], [countLabelFor]) and the pure Sobel edge-mask
- * ([sobelEdgesMasked]) behind the Edge Detection view mode.
+ * [formatCountStats], [countLabelFor]), the pure Sobel edge-mask
+ * ([sobelEdgesMasked]) behind the Edge Detection view mode, and the
+ * objects-only coverage mask ([boxesMask]).
  */
 class CountModeTest {
 
@@ -106,8 +107,39 @@ class CountModeTest {
     }
 
     @Test
+    fun sobel_nullBoxesRendersFullScreen() {
+        val w = 9
+        val h = 9
+        // Same split image, but null boxes = Edge Detection view default:
+        // edges render across the whole screen, including far from any object.
+        val lum = IntArray(w * h) { i -> if ((i % w) < 4) 255 else 0 }
+        val out = sobelEdgesMasked(lum, w, h, null)
+        val edgeColor = (255 shl 24) or 0x00E676
+        assertTrue(out.any { it == edgeColor })
+        // Bottom-right corner pixel sits on the white/black boundary → edge.
+        assertEquals(edgeColor, out[8 * w + 4])
+    }
+
+    @Test
     fun sobel_flatImageProducesNoEdges() {
         val out = sobelEdgesMasked(IntArray(25) { 128 }, 5, 5, listOf(box(0f, 0f, 1f, 1f)))
         assertTrue(out.all { it == android.graphics.Color.BLACK })
+    }
+
+    // ── boxesMask (objects-only coverage) ──────────────────────────────────
+
+    @Test
+    fun boxesMask_coversOnlyBoxPixels() {
+        val mask = boxesMask(4, 4, listOf(box(0f, 0f, 0.5f, 0.5f)))
+        // Box maps to pixels (0..2, 0..2); everything else is false.
+        assertTrue(mask[0])
+        assertTrue(mask[2 * 4 + 2])
+        assertFalse(mask[3 * 4 + 3])
+        assertFalse(mask[1 * 4 + 3])
+    }
+
+    @Test
+    fun boxesMask_emptyIsAllFalse() {
+        assertTrue(boxesMask(4, 4, emptyList()).none { it })
     }
 }
