@@ -14,7 +14,10 @@ import com.yolo.detector.data.ViewMode
 import com.yolo.detector.databinding.FragmentLiveBinding
 import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.ui.ViewModeEffects
+import com.yolo.detector.ui.applyCountEdges
+import com.yolo.detector.ui.CountTally
 import com.yolo.detector.ui.applyHeatmap
+import com.yolo.detector.ui.formatCountStats
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.isActive
@@ -47,6 +50,14 @@ class LiveFragment : Fragment() {
     private var pendingHeatmapFrame: Bitmap? = null
     private var heatmapWorker: Job? = null
 
+    // Count mode: serial edge-bake worker (same drop-oldest pattern as heatmap).
+    // Frames are paired with the latest detections snapshot taken on the main
+    // thread, so masking boxes align with the baked frame's inference pass.
+    private var pendingCountFrame: Bitmap? = null
+    private var countWorker: Job? = null
+    private var latestDetections: List<com.yolo.detector.data.Detection> = emptyList()
+    private val countTally = CountTally()
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -76,6 +87,16 @@ class LiveFragment : Fragment() {
             captureAndSaveSnapshot()
         }
 
+        // Mode toggle above the snapshot FAB: 'D' = default detect view,
+        // 'C' = count view (objects-only edges + per-class tally HUD).
+        binding.fabModeToggle.setOnClickListener {
+            if (currentMode == ViewMode.COUNT) {
+                viewModel.setViewMode(ViewMode.NORMAL)
+            } else {
+                viewModel.setViewMode(ViewMode.COUNT)
+            }
+        }
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
@@ -95,6 +116,7 @@ class LiveFragment : Fragment() {
                             binding.imageFilterPreview.visibility = View.VISIBLE
                             when (currentMode) {
                                 ViewMode.HEATMAP -> onHeatmapFrame(bitmap)
+                                ViewMode.COUNT -> onCountFrame(bitmap)
                                 ViewMode.NORMAL -> bitmap.recycle() // camera filtered, UI not yet updated
                                 else -> commitFrame(bitmap)
                             }
@@ -109,13 +131,27 @@ class LiveFragment : Fragment() {
                 launch {
                     viewModel.detectionFlow.collect { detections ->
                         binding.overlay.setDetections(detections)
+                        latestDetections = detections
+                        if (currentMode == ViewMode.COUNT) {
+                            // Cumulative per-class count from confirmed track IDs.
+                            if (countTally.update(detections)) {
+                                refreshCountHud()
+                            }
+                        }
                     }
                 }
                 launch {
                     viewModel.statsFlow.collect { stats ->
-                        binding.tvStats.text = "FPS: ${"%.1f".format(stats.fps)}  " +
-                                "Latency: ${stats.inferenceMs}ms  " +
-                                "Objects: ${stats.objectCount}"
+                        if (currentMode == ViewMode.COUNT) {
+                            // HUD shows cumulative per-class counts while stats update.
+                            lastStatsFps = stats.fps
+                            lastStatsMs = stats.inferenceMs
+                            refreshCountHud()
+                        } else {
+                            binding.tvStats.text = "FPS: ${"%.1f".format(stats.fps)}  " +
+                                    "Latency: ${stats.inferenceMs}ms  " +
+                                    "Objects: ${stats.objectCount}"
+                        }
                     }
                 }
                 launch {
@@ -143,12 +179,20 @@ class LiveFragment : Fragment() {
     }
     /** Switches between the raw preview and the filtered frame renderer overlay. */
     private fun applyViewMode(mode: ViewMode) {
-        if (mode == currentMode) return
+        if (mode == currentMode) {
+            // First run: sync the toggle letter with restored persisted mode.
+            binding.fabModeToggle.text = if (mode == ViewMode.COUNT) "C" else "D"
+            return
+        }
         android.util.Log.i("ViewMode", "applyViewMode=$mode")
         currentMode = mode
 
         // Full reset: releases the previous mode's frames and stops any bake.
         clearDisplayedFrame()
+
+        // Count tally restarts fresh each time count mode is entered.
+        if (mode == ViewMode.COUNT) countTally.clear()
+        binding.fabModeToggle.text = if (mode == ViewMode.COUNT) "C" else "D"
 
         binding.imageFilterPreview.colorFilter = when (mode) {
             ViewMode.BLACK_AND_WHITE -> ViewModeEffects.blackAndWhiteColorFilter()
@@ -220,6 +264,73 @@ class LiveFragment : Fragment() {
         }
     }
 
+    // ── Count mode (objects-only edges + cumulative tally) ───────────────────
+
+    /** Latest stats values, reused to re-render the count HUD on new tracks. */
+    private var lastStatsFps: Float = 0f
+    private var lastStatsMs: Long = 0L
+
+    /** Re-renders the count-mode HUD from the cumulative tally. Main thread. */
+    private fun refreshCountHud() {
+        binding.tvStats.text = formatCountStats(lastStatsFps, lastStatsMs, countTally.snapshot())
+    }
+
+    /**
+     * Receives a count-mode frame. Keeps only the newest frame (drop-oldest),
+     * paired with the latest detections snapshot, and hands it to the serial
+     * baker. Owns [frame] on entry; the baker recycles it.
+     */
+    private fun onCountFrame(frame: Bitmap) {
+        pendingCountFrame?.recycle()
+        pendingCountFrame = frame
+        ensureCountWorker()
+    }
+
+    /** Starts the count baker if it is not already running. */
+    private fun ensureCountWorker() {
+        if (countWorker != null) return
+        countWorker = viewLifecycleOwner.lifecycleScope.launch {
+            runCountLoop()
+        }
+    }
+
+    /**
+     * Serial count loop (runs on main; bakes on a background thread). Bakes
+     * the latest pending frame masked to the detections snapshot taken when
+     * the frame arrived, then commits it. Same main-confined ownership pattern
+     * as the heatmap loop, so the drop-oldest recycle cannot race the bake.
+     */
+    private suspend fun runCountLoop() {
+        try {
+            while (currentMode == ViewMode.COUNT) {
+                val frame = pendingCountFrame ?: return
+                pendingCountFrame = null
+                val boxes = latestDetections
+
+                val holder = arrayOfNulls<Bitmap>(1)
+                try {
+                    withContext(Dispatchers.Default) {
+                        // Synchronous bake. applyCountEdges never recycles the source.
+                        holder[0] = frame.applyCountEdges(boxes)
+                    }
+                    val baked = holder[0] ?: return
+                    if (currentMode != ViewMode.COUNT || !currentCoroutineContext().isActive) {
+                        baked.recycle()
+                        return
+                    }
+                    commitFrame(baked)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    holder[0]?.recycle()
+                    throw e
+                } finally {
+                    frame.recycle()
+                }
+            }
+        } finally {
+            if (currentCoroutineContext()[Job] == countWorker) countWorker = null
+        }
+    }
+
     /** Takes ownership of [img] and shows it as the current filtered frame. */
     private fun commitFrame(img: Bitmap) {
         android.util.Log.i("ViewMode", "display frame ${img.width}x${img.height}")
@@ -235,6 +346,10 @@ class LiveFragment : Fragment() {
         heatmapWorker = null
         pendingHeatmapFrame?.recycle()
         pendingHeatmapFrame = null
+        countWorker?.cancel()
+        countWorker = null
+        pendingCountFrame?.recycle()
+        pendingCountFrame = null
         binding.imageFilterPreview.setImageBitmap(null)
         binding.imageFilterPreview.colorFilter = null
         val old = displayedBitmap
@@ -257,8 +372,8 @@ class LiveFragment : Fragment() {
         val h = binding.overlay.height.takeIf { it > 0 } ?: frame.height
 
         // B&W / Invert are GPU color-matrix filters applied by the ImageView, so bake
-        // them onto the snapshot the same way for a faithful capture. Heatmap is
-        // already baked into displayedBitmap at this point.
+        // them onto the snapshot the same way for a faithful capture. Heatmap and
+        // Count are already baked into displayedBitmap at this point.
         val paint = when (currentMode) {
             ViewMode.BLACK_AND_WHITE -> android.graphics.Paint().apply {
                 colorFilter = ViewModeEffects.blackAndWhiteColorFilter()
@@ -295,6 +410,10 @@ class LiveFragment : Fragment() {
         heatmapWorker = null
         pendingHeatmapFrame?.recycle()
         pendingHeatmapFrame = null
+        countWorker?.cancel()
+        countWorker = null
+        pendingCountFrame?.recycle()
+        pendingCountFrame = null
         displayedBitmap?.recycle()
         displayedBitmap = null
         _binding = null
