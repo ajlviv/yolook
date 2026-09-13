@@ -39,12 +39,18 @@ class TfliteDetector(
     @Volatile var settings: InferenceSettings,
 ) : Closeable {
 
-    private val interpreter: Interpreter
+    private var interpreter: Interpreter
     private var gpuDelegate: GpuDelegate? = null
     private val isChannelsFirst: Boolean
     private val isInputChannelsFirst: Boolean
     private val numBoxes: Int
     private val numClasses: Int
+    private val isInputQuantized: Boolean
+    private val isOutputQuantized: Boolean
+    private val inputScale: Float
+    private val inputZeroPoint: Int
+    private val outputScale: Float
+    private val outputZeroPoint: Int
     private val outputBuffer: ByteBuffer
     private val outputFloatBuffer: java.nio.FloatBuffer
 
@@ -52,11 +58,12 @@ class TfliteDetector(
     private val normTable = FloatArray(256) { it / 255f }
 
     // Preallocated buffers to eliminate GC churn and direct ByteBuffer native memory leaks
-    private val inputBuffer: ByteBuffer = ByteBuffer
-        .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * 3 * 4)
-        .apply { order(ByteOrder.nativeOrder()) }
-    private val inputFloatBuffer: java.nio.FloatBuffer = inputBuffer.asFloatBuffer()
+    private val inputBuffer: ByteBuffer
+    private val inputFloatBuffer: java.nio.FloatBuffer?
     private val scaledPixels = IntArray(INPUT_SIZE * INPUT_SIZE)
+    private val preallocatedFloatArray = FloatArray(INPUT_SIZE * INPUT_SIZE * 3)
+
+    private val contextRef: Context = context.applicationContext
 
     init {
         val model = loadModelFile(context)
@@ -66,6 +73,10 @@ class TfliteDetector(
         val inputTensor = interpreter.getInputTensor(0)
         val inShape = inputTensor.shape()
         isInputChannelsFirst = (inShape.size >= 4 && inShape[1] == 3)
+        isInputQuantized = (inputTensor.dataType() == org.tensorflow.lite.DataType.INT8 || inputTensor.dataType() == org.tensorflow.lite.DataType.UINT8)
+        val inQParams = inputTensor.quantizationParams()
+        inputScale = if (inQParams.scale > 0f) inQParams.scale else 1f
+        inputZeroPoint = inQParams.zeroPoint
 
         val outputTensor = interpreter.getOutputTensor(0)
         val shape = outputTensor.shape()
@@ -73,13 +84,27 @@ class TfliteDetector(
         isChannelsFirst = (shape.size >= 3 && shape[1] <= 100 && shape[2] > 100)
         numBoxes = if (isChannelsFirst) shape[2] else shape[1]
         numClasses = (if (isChannelsFirst) shape[1] else shape[2]) - 4
+        isOutputQuantized = (outputTensor.dataType() == org.tensorflow.lite.DataType.INT8 || outputTensor.dataType() == org.tensorflow.lite.DataType.UINT8)
+        val outQParams = outputTensor.quantizationParams()
+        outputScale = if (outQParams.scale > 0f) outQParams.scale else 1f
+        outputZeroPoint = outQParams.zeroPoint
 
+        val inputBytesPerElem = if (isInputQuantized) 1 else 4
+        inputBuffer = ByteBuffer
+            .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * 3 * inputBytesPerElem)
+            .apply { order(ByteOrder.nativeOrder()) }
+        inputFloatBuffer = if (isInputQuantized) null else inputBuffer.asFloatBuffer()
+
+        val outputBytesPerElem = if (isOutputQuantized) 1 else 4
         outputBuffer = ByteBuffer
-            .allocateDirect(outputTensor.numElements() * 4)
+            .allocateDirect(outputTensor.numElements() * outputBytesPerElem)
             .apply { order(ByteOrder.nativeOrder()) }
         outputFloatBuffer = outputBuffer.asFloatBuffer()
 
-        android.util.Log.i("TfliteDetector", "Model initialized. InShape=${inShape.joinToString()}, OutShape=${shape.joinToString()}, isInputCF=$isInputChannelsFirst, isOutCF=$isChannelsFirst, boxes=$numBoxes, classes=$numClasses")
+        android.util.Log.i(
+            "TfliteDetector",
+            "Model initialized. InShape=${inShape.joinToString()}, InQuant=$isInputQuantized, OutShape=${shape.joinToString()}, OutQuant=$isOutputQuantized, isInputCF=$isInputChannelsFirst, isOutCF=$isChannelsFirst, boxes=$numBoxes, classes=$numClasses"
+        )
     }
 
     // ── Initialisation ────────────────────────────────────────────────────────
@@ -93,9 +118,9 @@ class TfliteDetector(
         )
     }
 
-    private fun buildInterpreterOptions(): Interpreter.Options {
+    private fun buildInterpreterOptions(forceCpu: Boolean = false): Interpreter.Options {
         val options = Interpreter.Options()
-        if (settings.enableGpuDelegate) {
+        if (settings.enableGpuDelegate && !forceCpu) {
             try {
                 val compatList = CompatibilityList()
                 if (compatList.isDelegateSupportedOnThisDevice) {
@@ -109,7 +134,8 @@ class TfliteDetector(
             }
         }
         val availableCores = Runtime.getRuntime().availableProcessors()
-        options.setNumThreads(availableCores.coerceIn(4, 8))
+        options.setNumThreads(availableCores.coerceIn(2, 6))
+        options.setUseXNNPACK(true)
         return options
     }
 
@@ -133,41 +159,97 @@ class TfliteDetector(
             scaled.recycle()
         }
 
-        inputFloatBuffer.rewind()
-        val norm = normTable
-        if (isInputChannelsFirst) {
-            // NCHW format: RRR... GGG... BBB...
-            val planeSize = INPUT_SIZE * INPUT_SIZE
-            val floatArr = FloatArray(planeSize * 3)
-            for (i in 0 until planeSize) {
-                val pixel = scaledPixels[i]
-                floatArr[i] = norm[(pixel shr 16) and 0xFF]
-                floatArr[planeSize + i] = norm[(pixel shr 8) and 0xFF]
-                floatArr[planeSize * 2 + i] = norm[pixel and 0xFF]
+        inputBuffer.rewind()
+        if (isInputQuantized) {
+            // Quantized INT8/UINT8 feeding directly into inputBuffer
+            if (isInputChannelsFirst) {
+                val planeSize = INPUT_SIZE * INPUT_SIZE
+                for (i in 0 until planeSize) {
+                    val p = scaledPixels[i]
+                    val r = ((p shr 16) and 0xFF) / 255f
+                    val g = ((p shr 8) and 0xFF) / 255f
+                    val b = (p and 0xFF) / 255f
+                    inputBuffer.put(i, (r / inputScale + inputZeroPoint).toInt().coerceIn(-128, 127).toByte())
+                    inputBuffer.put(planeSize + i, (g / inputScale + inputZeroPoint).toInt().coerceIn(-128, 127).toByte())
+                    inputBuffer.put(planeSize * 2 + i, (b / inputScale + inputZeroPoint).toInt().coerceIn(-128, 127).toByte())
+                }
+            } else {
+                var idx = 0
+                for (pixel in scaledPixels) {
+                    val r = ((pixel shr 16) and 0xFF) / 255f
+                    val g = ((pixel shr 8) and 0xFF) / 255f
+                    val b = (pixel and 0xFF) / 255f
+                    inputBuffer.put(idx++, (r / inputScale + inputZeroPoint).toInt().coerceIn(-128, 127).toByte())
+                    inputBuffer.put(idx++, (g / inputScale + inputZeroPoint).toInt().coerceIn(-128, 127).toByte())
+                    inputBuffer.put(idx++, (b / inputScale + inputZeroPoint).toInt().coerceIn(-128, 127).toByte())
+                }
             }
-            inputFloatBuffer.put(floatArr)
         } else {
-            // NHWC format: RGB RGB RGB...
-            val floatArr = FloatArray(INPUT_SIZE * INPUT_SIZE * 3)
-            var idx = 0
-            for (pixel in scaledPixels) {
-                floatArr[idx++] = norm[(pixel shr 16) and 0xFF]
-                floatArr[idx++] = norm[(pixel shr 8) and 0xFF]
-                floatArr[idx++] = norm[pixel and 0xFF]
+            // Float32 feeding into pre-allocated reusable array
+            inputFloatBuffer?.rewind()
+            val norm = normTable
+            val floatArr = preallocatedFloatArray
+            if (isInputChannelsFirst) {
+                val planeSize = INPUT_SIZE * INPUT_SIZE
+                for (i in 0 until planeSize) {
+                    val pixel = scaledPixels[i]
+                    floatArr[i] = norm[(pixel shr 16) and 0xFF]
+                    floatArr[planeSize + i] = norm[(pixel shr 8) and 0xFF]
+                    floatArr[planeSize * 2 + i] = norm[pixel and 0xFF]
+                }
+            } else {
+                var idx = 0
+                for (pixel in scaledPixels) {
+                    floatArr[idx++] = norm[(pixel shr 16) and 0xFF]
+                    floatArr[idx++] = norm[(pixel shr 8) and 0xFF]
+                    floatArr[idx++] = norm[pixel and 0xFF]
+                }
             }
-            inputFloatBuffer.put(floatArr)
+            inputFloatBuffer?.put(floatArr)
         }
         inputBuffer.rewind()
 
         outputBuffer.rewind()
-        interpreter.run(inputBuffer, outputBuffer)
-        outputFloatBuffer.rewind()
+        try {
+            interpreter.run(inputBuffer, outputBuffer)
+        } catch (e: Exception) {
+            android.util.Log.e("TfliteDetector", "Interpreter run failed, attempting CPU fallback", e)
+            fallbackToCpu()
+            outputBuffer.rewind()
+            inputBuffer.rewind()
+            interpreter.run(inputBuffer, outputBuffer)
+        }
+        if (!isOutputQuantized) {
+            outputFloatBuffer.rewind()
+        }
 
         val timestampMs = System.currentTimeMillis()
         return parseOutput(timestampMs)
     }
 
-    // ── Output parsing ────────────────────────────────────────────────────────
+    private fun fallbackToCpu() {
+        try {
+            gpuDelegate?.close()
+        } catch (_: Exception) {}
+        gpuDelegate = null
+        try {
+            val model = loadModelFile(contextRef)
+            val cpuOptions = buildInterpreterOptions(forceCpu = true)
+            interpreter.close()
+            interpreter = Interpreter(model, cpuOptions)
+        } catch (e: Exception) {
+            android.util.Log.e("TfliteDetector", "Failed to recreate CPU interpreter", e)
+        }
+    }
+
+    private fun getOutputValue(index: Int): Float {
+        return if (isOutputQuantized) {
+            val raw = outputBuffer.get(index).toInt()
+            (raw - outputZeroPoint) * outputScale
+        } else {
+            outputFloatBuffer.get(index)
+        }
+    }
 
     private fun parseOutput(timestampMs: Long): List<Detection> {
         val candidates = ArrayList<Detection>(64)
@@ -184,7 +266,7 @@ class TfliteDetector(
             if (isChannelsFirst) {
                 for (cls in activeFilter) {
                     if (cls >= totalClasses) continue
-                    val score = outputFloatBuffer.get((4 + cls) * totalBoxes + boxIdx)
+                    val score = getOutputValue((4 + cls) * totalBoxes + boxIdx)
                     if (score > bestScore) {
                         bestScore = score
                         bestClassId = cls
@@ -194,7 +276,7 @@ class TfliteDetector(
                 val boxOffset = boxIdx * (totalClasses + 4)
                 for (cls in activeFilter) {
                     if (cls >= totalClasses) continue
-                    val score = outputFloatBuffer.get(boxOffset + 4 + cls)
+                    val score = getOutputValue(boxOffset + 4 + cls)
                     if (score > bestScore) {
                         bestScore = score
                         bestClassId = cls
@@ -209,16 +291,16 @@ class TfliteDetector(
             val w: Float
             val h: Float
             if (isChannelsFirst) {
-                cx = outputFloatBuffer.get(0 * totalBoxes + boxIdx)
-                cy = outputFloatBuffer.get(1 * totalBoxes + boxIdx)
-                w  = outputFloatBuffer.get(2 * totalBoxes + boxIdx)
-                h  = outputFloatBuffer.get(3 * totalBoxes + boxIdx)
+                cx = getOutputValue(0 * totalBoxes + boxIdx)
+                cy = getOutputValue(1 * totalBoxes + boxIdx)
+                w  = getOutputValue(2 * totalBoxes + boxIdx)
+                h  = getOutputValue(3 * totalBoxes + boxIdx)
             } else {
                 val boxOffset = boxIdx * (totalClasses + 4)
-                cx = outputFloatBuffer.get(boxOffset + 0)
-                cy = outputFloatBuffer.get(boxOffset + 1)
-                w  = outputFloatBuffer.get(boxOffset + 2)
-                h  = outputFloatBuffer.get(boxOffset + 3)
+                cx = getOutputValue(boxOffset + 0)
+                cy = getOutputValue(boxOffset + 1)
+                w  = getOutputValue(boxOffset + 2)
+                h  = getOutputValue(boxOffset + 3)
             }
 
             // Auto-detect whether output box coordinates are normalized [0, 1] or raw pixels [0, 640]

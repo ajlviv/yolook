@@ -96,6 +96,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var boundPreviewView: PreviewView? = null
 
     private val driverSceneBuilder = DriverSceneBuilder()
+    private val thermalMonitor = com.yolo.detector.util.ThermalMonitor(application)
     private lateinit var soundManager: WarningSoundManager
 
     init {
@@ -240,7 +241,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (hadManager && owner != null && view != null &&
             owner.lifecycle.currentState.isAtLeast(Lifecycle.State.INITIALIZED)
         ) {
-            val mgr = CameraManager(getApplication(), settings, detector!!, tracker, driverSceneBuilder)
+            val mgr = CameraManager(getApplication(), settings, detector!!, tracker, driverSceneBuilder, thermalMonitor)
             cameraManager = mgr
             mgr.bindCamera(owner, view)
         }
@@ -288,7 +289,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // analysis thread keeps referencing the previous camera session.
         cameraManager?.shutdown()
 
-        val mgr = CameraManager(getApplication(), currentSettings, d, tracker, driverSceneBuilder)
+        val mgr = CameraManager(getApplication(), currentSettings, d, tracker, driverSceneBuilder, thermalMonitor)
         cameraManager = mgr
 
         mgr.bindCamera(lifecycleOwner, previewView)
@@ -359,5 +360,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
         cameraManager?.shutdown()
         detector?.close()
+        thermalMonitor.close()
     }
 }

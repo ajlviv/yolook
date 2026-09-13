@@ -42,10 +42,15 @@ class JetpackSoundPlayer(private val context: Context) : SoundPlayer {
     private fun soundUri(warning: WarningType): Uri? {
         val scheme = "android-resource:///"
         val name = when (warning) {
-            WarningType.RED_LIGHT -> "sounds/warning_danger.wav"
-            WarningType.YELLOW_LIGHT -> "sounds/warning_caution.wav"
-            WarningType.SPEED_LIMIT -> "sounds/sign_notice.wav"
+            WarningType.RED_LIGHT,
+            WarningType.FORWARD_COLLISION,
+            WarningType.PEDESTRIAN_CROSSING,
             WarningType.PERSON_ON_ROAD -> "sounds/warning_danger.wav"
+
+            WarningType.YELLOW_LIGHT,
+            WarningType.TAILGATING -> "sounds/warning_caution.wav"
+
+            WarningType.SPEED_LIMIT -> "sounds/sign_notice.wav"
         }
         return try {
             Uri.parse(scheme + name)

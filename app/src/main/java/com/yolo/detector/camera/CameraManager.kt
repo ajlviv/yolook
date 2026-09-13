@@ -18,6 +18,7 @@ import com.yolo.detector.ui.DriverSceneBuilder
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import com.yolo.detector.util.ThermalMonitor
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -28,13 +29,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * The analysis pipeline:
  * 1. Receives frames via [ImageAnalysis] with STRATEGY_KEEP_ONLY_LATEST.
- * 2. Throttles frame processing to [InferenceSettings.inferenceRateFps].
- * 3. Converts each kept frame to a Bitmap.
- * 4. Runs [TfliteDetector.detect] sequentially on a dedicated background thread.
- * 5. Runs [ByteTracker.update] on the same thread.
- * 6. Posts the result to [detectionFlow] for the ViewModel to collect.
- *
- * The camera preview still runs at full device frame rate — only inference is throttled.
+ * 2. Runs fast-path Kalman tracking prediction at full 30-60 FPS camera rate for smooth UI.
+ * 3. Throttles heavy ML inference to [InferenceSettings.inferenceRateFps], adaptively regulated by [ThermalMonitor].
+ * 4. Runs [TfliteDetector.detect] on a background thread.
+ * 5. Corrects tracks with [ByteTracker.update] upon detection completion.
  */
 class CameraManager(
     private val context: Context,
@@ -42,6 +40,7 @@ class CameraManager(
     private val detector: TfliteDetector,
     private val tracker: ByteTracker,
     private val driverSceneBuilder: DriverSceneBuilder,
+    private val thermalMonitor: ThermalMonitor? = null,
 ) {
 
     private val _detectionFlow = MutableStateFlow<List<Detection>>(emptyList())
@@ -77,7 +76,6 @@ class CameraManager(
     private var boundCamera: Camera? = null
 
     // Throttle bookkeeping
-    private val frameIntervalMs: Long get() = 1000L / settings.inferenceRateFps.coerceAtLeast(1)
     private var lastInferenceMs: Long = 0L
 
     /**
@@ -152,12 +150,22 @@ class CameraManager(
 
     private fun processFrame(imageProxy: ImageProxy) {
         val now = System.currentTimeMillis()
-        if (now - lastInferenceMs < frameIntervalMs) {
+        val requestedFps = settings.inferenceRateFps.coerceAtLeast(1)
+        val effectiveFps = thermalMonitor?.getAdaptiveFpsCap(requestedFps) ?: requestedFps
+        val intervalMs = 1000L / effectiveFps
+
+        // Fast-path: Update predicted positions for existing active tracks on every frame (30-60 FPS)
+        val fastTracks = tracker.getActiveDetections(now)
+        if (fastTracks.isNotEmpty() && isAnalyzing.get()) {
+            _detectionFlow.value = fastTracks
+        }
+
+        if (now - lastInferenceMs < intervalMs) {
             imageProxy.close()
             return
         }
 
-        // If an inference pass is currently running, drop the frame to prevent queue buildup and concurrency issues
+        // If an inference pass is currently running, drop the frame to prevent queue buildup
         if (!isAnalyzing.compareAndSet(false, true)) {
             imageProxy.close()
             return
@@ -178,10 +186,6 @@ class CameraManager(
         scope.launch {
             try {
                 val viewMode = settings.viewMode
-                // NORMAL keeps the smooth PreviewView. Every other mode renders through
-                // the filtered ImageView: B&W/Invert/Heatmap bake their look, and DRIVER
-                // shows a dimmed frame as the background scene when the raw preview is
-                // hidden (driver + "hide camera view"), so the screen is never black.
                 val needsFrameCopy =
                     viewMode == ViewMode.BLACK_AND_WHITE ||
                     viewMode == ViewMode.INVERT ||
@@ -202,11 +206,6 @@ class CameraManager(
                 _inferenceTimeMs.value = inferenceEnd - inferenceStart
                 _detectionFlow.value = toEmit
 
-                // Build the driver HUD scene on this same analysis thread while `bitmap`
-                // is still owned and alive (it is recycled in `finally` below). Building
-                // it here — instead of letting the ViewModel read a frame the UI owns and
-                // recycles — removes a cross-coroutine "getPixels on recycled bitmap" race
-                // that could otherwise kill the driver scene and hide the Signals bar.
                 if (viewMode == ViewMode.DRIVER) {
                     _driverSceneFlow.value = driverSceneBuilder.build(toEmit, bitmap)
                 }

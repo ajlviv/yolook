@@ -111,6 +111,18 @@ class ByteTracker {
             .map { it.toDetection(timestampMs) }
     }
 
+    /**
+     * Fast-path query: returns current predicted bounding boxes for all CONFIRMED tracks
+     * without modifying tracking age or dropping tracks.
+     * Used for smooth 30-60 FPS UI updates between keyframe ML detections.
+     */
+    @Synchronized
+    fun getActiveDetections(timestampMs: Long): List<Detection> {
+        return activeTracks
+            .filter { it.state == TrackState.CONFIRMED }
+            .map { it.toDetection(timestampMs) }
+    }
+
     /** Resets all tracking state. Call when the camera session restarts. */
     @Synchronized
     fun reset() {

@@ -4,6 +4,7 @@ import android.graphics.RectF
 import com.yolo.detector.data.Detection
 import com.yolo.detector.data.SignType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -32,8 +33,10 @@ class SignRecognizerTest {
     }
 
     @Test
-    fun testNoOpSpeedLimitEmitsNothing() {
-        val dets = listOf(Detection(-1, 2, 0.9f, box(), 100L)) // car
-        assertTrue(SignRecognizer(NoOpSpeedLimitRecognizer).recognize(dets).isEmpty())
+    fun testSignRecognizerReset() {
+        val recognizer = SignRecognizer()
+        assertNull(recognizer.activeSpeedLimit)
+        recognizer.reset()
+        assertNull(recognizer.activeSpeedLimit)
     }
 }

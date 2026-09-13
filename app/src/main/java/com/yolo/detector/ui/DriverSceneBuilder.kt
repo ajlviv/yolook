@@ -2,36 +2,37 @@ package com.yolo.detector.ui
 
 import android.graphics.Bitmap
 import com.yolo.detector.data.COCO_LABELS
+import com.yolo.detector.data.CollisionAlertLevel
 import com.yolo.detector.data.Detection
 import com.yolo.detector.data.DriverScene
+import com.yolo.detector.data.PedestrianThreatType
 import com.yolo.detector.data.SignType
 import com.yolo.detector.data.TrafficLightHud
 import com.yolo.detector.data.TrafficLightSignal
 import com.yolo.detector.data.WarningType
+import com.yolo.detector.inference.FcwEstimator
 import com.yolo.detector.inference.LaneClusterer
+import com.yolo.detector.inference.PedestrianThreatAnalyzer
 import com.yolo.detector.inference.RoadZone
 import com.yolo.detector.inference.SignRecognizer
 import com.yolo.detector.inference.SignalStabilizer
 import com.yolo.detector.inference.TrafficLightColorEstimator
 
 /**
- * Builds a [DriverScene] for one analyzed frame from the raw [Detection]s and the
- * source [Bitmap].
+ * Builds a [DriverScene] for one analyzed frame from the raw [Detection]s and the source [Bitmap].
  *
- * - Traffic lights (class "traffic light"): the lit signal is recovered by sampling
- *   the bounding-box pixels with [TrafficLightColorEstimator], temporally smoothed
- *   per track by [SignalStabilizer], then grouped into lanes by [LaneClusterer].
- * - People: any person box overlapping the road zone counts toward `peopleOnRoad`.
- * - Signs: resolved by [SignRecognizer].
- * - Warnings: derived from the scene (red/yellow light, speed-limit sign, person).
- *
- * All state is owned by this builder (signal stabilizer, recognizer) so it is safe
- * to reuse across frames. Callers must call [reset] when the pipeline restarts so
- * per-track signal state does not go stale.
+ * Coordinates:
+ * - Traffic light color extraction and lane assignment.
+ * - Lead vehicle selection, headway distance & Forward Collision Warning (FCW).
+ * - Pedestrian trajectory & crossing hazard analysis.
+ * - Sign recognition.
+ * - Warning dispatching for HUD and Audio Alert managers.
  */
 class DriverSceneBuilder(
     private val stabilizer: SignalStabilizer = SignalStabilizer(),
     private val signRecognizer: SignRecognizer = SignRecognizer(),
+    private val fcwEstimator: FcwEstimator = FcwEstimator(),
+    private val pedestrianThreatAnalyzer: PedestrianThreatAnalyzer = PedestrianThreatAnalyzer(),
 ) {
 
     private val trafficLightClass: Int get() = COCO_LABELS.indexOf("traffic light").coerceAtLeast(0)
@@ -65,26 +66,44 @@ class DriverSceneBuilder(
 
         val laneLights = LaneClusterer.assign(hudLights, xCenters)
 
-        // ── People on road ────────────────────────────────────────────────────
-        val peopleOnRoad = persons.count { RoadZone.overlapsRoad(it.bbox.bottom, it.bbox.top) }
+        // ── Forward Collision Warning & Lead Vehicle ──────────────────────────
+        val leadVehicle = fcwEstimator.estimate(detections)
+
+        // ── Pedestrians & Crossing Hazards ────────────────────────────────────
+        val pedAlerts = pedestrianThreatAnalyzer.analyze(persons)
+        val peopleOnRoad = pedAlerts.count { it.threatType != PedestrianThreatType.SAFE_SIDEWALK }
 
         // ── Signs ─────────────────────────────────────────────────────────────
-        val signs = signRecognizer.recognize(detections)
+        val signs = signRecognizer.recognize(detections, frame)
 
         // ── Warnings ──────────────────────────────────────────────────────────
         val warnings = mutableSetOf<WarningType>()
         val hasRed = laneLights.any { it.signal == TrafficLightSignal.RED }
         val hasYellow = laneLights.any { it.signal == TrafficLightSignal.YELLOW }
         val hasSpeedLimit = signs.any { it.type == SignType.SPEED_LIMIT }
+
         if (hasRed) warnings.add(WarningType.RED_LIGHT)
         if (hasYellow) warnings.add(WarningType.YELLOW_LIGHT)
         if (hasSpeedLimit) warnings.add(WarningType.SPEED_LIMIT)
         if (peopleOnRoad > 0) warnings.add(WarningType.PERSON_ON_ROAD)
 
+        if (leadVehicle?.alertLevel == CollisionAlertLevel.COLLISION_WARNING) {
+            warnings.add(WarningType.FORWARD_COLLISION)
+        } else if (leadVehicle?.alertLevel == CollisionAlertLevel.TAILGATING) {
+            warnings.add(WarningType.TAILGATING)
+        }
+
+        if (pedAlerts.any { it.threatType == PedestrianThreatType.CROSSING_PATH }) {
+            warnings.add(WarningType.PEDESTRIAN_CROSSING)
+        }
+
         return DriverScene(
             trafficLights = laneLights,
             signs = signs,
+            activeSpeedLimit = signRecognizer.activeSpeedLimit,
             peopleOnRoad = peopleOnRoad,
+            leadVehicle = leadVehicle,
+            pedestrianAlerts = pedAlerts,
             warnings = warnings,
         )
     }
@@ -92,6 +111,9 @@ class DriverSceneBuilder(
     /** Reclaims per-track signal state (call when the camera pipeline restarts). */
     fun reset() {
         stabilizer.reset()
+        fcwEstimator.reset()
+        pedestrianThreatAnalyzer.reset()
+        signRecognizer.reset()
     }
 
     /**

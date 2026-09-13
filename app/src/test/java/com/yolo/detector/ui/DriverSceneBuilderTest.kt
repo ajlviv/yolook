@@ -1,24 +1,26 @@
 package com.yolo.detector.ui
 
 import android.graphics.RectF
+import com.yolo.detector.data.CollisionAlertLevel
 import com.yolo.detector.data.Detection
+import com.yolo.detector.data.WarningType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DriverSceneBuilderTest {
 
-    private fun box(): RectF =
+    private fun box(l: Float = 0.3f, t: Float = 0.1f, r: Float = 0.36f, b: Float = 0.4f): RectF =
         RectF().apply {
-            left = 0.3f
-            top = 0.1f
-            right = 0.36f
-            bottom = 0.4f
+            left = l
+            top = t
+            right = r
+            bottom = b
         }
 
     @Test
     fun testTrafficLightWithoutFrameYieldsNoLane() {
-        // class 9 = traffic light; without a frame there is no pixel sample → UNKNOWN → no lane shown.
         val scene = DriverSceneBuilder().build(
             listOf(Detection(-1, 9, 0.85f, box(), 100L)),
             null,
@@ -36,17 +38,22 @@ class DriverSceneBuilderTest {
 
     @Test
     fun testPersonClassWithStubBBoxIsNotFalselyOnRoad() {
-        // Place the person entirely in the upper third of the frame (well above the
-        // default road zone at y > 0.4) so it must never be counted on-road.
-        val upperBox = RectF()
-        upperBox.left = 0.3f
-        upperBox.top = 0.05f
-        upperBox.right = 0.36f
-        upperBox.bottom = 0.2f
+        val upperBox = box(l = 0.3f, t = 0.05f, r = 0.36f, b = 0.2f)
         val scene = DriverSceneBuilder().build(
             listOf(Detection(-1, 0, 0.9f, upperBox, 100L)), // person
             null,
         )
         assertEquals(0, scene.peopleOnRoad)
+    }
+
+    @Test
+    fun testLeadCarForwardCollisionWarningInScene() {
+        val builder = DriverSceneBuilder()
+        // Car straight ahead in ego corridor
+        val carAhead = Detection(1, 2, 0.95f, box(l = 0.40f, t = 0.60f, r = 0.60f, b = 0.85f), 100L)
+        val scene = builder.build(listOf(carAhead), null)
+
+        assertNotNull(scene.leadVehicle)
+        assertEquals(1, scene.leadVehicle!!.trackId)
     }
 }
