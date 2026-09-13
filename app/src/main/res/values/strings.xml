@@ -20,13 +20,13 @@
     <string name="view_mode_black_white">Black &amp; White</string>
     <string name="view_mode_invert">Invert</string>
     <string name="view_mode_heatmap">Heatmap</string>
-    <string name="view_mode_count">Count</string>
+    <string name="view_mode_edge">Edge detection</string>
     <string-array name="view_modes">
         <item>@string/view_mode_normal</item>
         <item>@string/view_mode_black_white</item>
         <item>@string/view_mode_invert</item>
         <item>@string/view_mode_heatmap</item>
-        <item>@string/view_mode_count</item>
+        <item>@string/view_mode_edge</item>
     </string-array>
     <string name="permission_rationale">Camera permission is required to run the live detector.</string>
     <string name="snapshot_saved">Snapshot saved to gallery</string>

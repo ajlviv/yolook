@@ -111,73 +111,45 @@ fun Bitmap.applyHeatmap(downscale: Int = 2): Bitmap {
 }
 
 /**
- * Count-mode edge threshold on the Sobel gradient magnitude (0-255 luminance
+ * Edge-view threshold on the Sobel gradient magnitude (0-255 luminance
  * units). A pixel is an "edge" when |Gx| + |Gy| >= this value. 100 keeps
  * strong object contours while suppressing flat-region noise; tune up if the
  * overlay looks speckled, down if thin object outlines disappear.
  */
-const val COUNT_EDGE_THRESHOLD = 100
+const val EDGE_THRESHOLD = 100
 
-/** Count-mode edge colour: app accent green (#00E676), fully opaque. */
-private const val COUNT_EDGE_COLOR: Int = (255 shl 24) or 0x00E676
+/** Edge-view colour: app accent green (#00E676), fully opaque. */
+private const val EDGE_COLOR: Int = (255 shl 24) or 0x00E676
 
 /**
- * Count-mode cumulative tally: class ID -> number of distinct confirmed
- * track IDs ever seen for that class. Mutations and reads run on the main
- * thread (UI collectors), so no locking is needed.
+ * Groups one frame's detections into per-class counts, sorted by count
+ * descending. Pure function — reflects only the current frame (nothing
+ * cumulative). Used by the Live-tab count toggle HUD.
  */
-class CountTally {
-    private val seenTracks = mutableSetOf<Int>()
-    private val counts = mutableMapOf<Int, Int>()
-
-    /**
-     * Folds one frame's tracked detections into the tally. Only detections
-     * with a real track ID (>= 0) count — untracked raw output (trackId = -1)
-     * is skipped. A track ID is counted once, under its first-seen class.
-     *
-     * @return true if the tally changed (a new track ID was seen).
-     */
-    fun update(detections: List<Detection>): Boolean {
-        var changed = false
-        for (det in detections) {
-            if (det.trackId < 0) continue
-            if (seenTracks.add(det.trackId)) {
-                counts[det.classId] = (counts[det.classId] ?: 0) + 1
-                changed = true
-            }
-        }
-        return changed
+fun countByClass(detections: List<Detection>): List<Pair<Int, Int>> {
+    if (detections.isEmpty()) return emptyList()
+    val counts = mutableMapOf<Int, Int>()
+    for (det in detections) {
+        counts[det.classId] = (counts[det.classId] ?: 0) + 1
     }
-
-    /** Per-class cumulative counts, sorted by count descending. */
-    fun snapshot(): List<Pair<Int, Int>> =
-        counts.entries.sortedByDescending { it.value }.map { it.key to it.value }
-
-    /** Total objects counted across all classes. */
-    fun total(): Int = counts.values.sum()
-
-    /** Clears all counts (e.g. when leaving count mode). */
-    fun clear() {
-        seenTracks.clear()
-        counts.clear()
-    }
+    return counts.entries.sortedByDescending { it.value }.map { it.key to it.value }
 }
 
 /**
- * Formats the Live HUD line(s) for count mode. Line 1 mirrors the default
- * stats line with a cumulative Total; following lines list per-class counts
+ * Formats the Live HUD line(s) for the count toggle. Line 1 mirrors the
+ * default stats line; following lines list this frame's per-class counts
  * ("label: n") sorted by count descending.
  */
 fun formatCountStats(
     fps: Float,
     inferenceMs: Long,
-    tally: List<Pair<Int, Int>>,
+    perClass: List<Pair<Int, Int>>,
 ): String {
-    val total = tally.sumOf { it.second }
-    val header = "FPS: ${"%.1f".format(fps)}  Latency: ${inferenceMs}ms  Total: $total"
-    if (tally.isEmpty()) return header
-    val perClass = tally.joinToString("\n") { (classId, count) -> "${labelFor(classId)}: $count" }
-    return "$header\n$perClass"
+    val objects = perClass.sumOf { it.second }
+    val header = "FPS: ${"%.1f".format(fps)}  Latency: ${inferenceMs}ms  Objects: $objects"
+    if (perClass.isEmpty()) return header
+    val lines = perClass.joinToString("\n") { (classId, count) -> "${labelFor(classId)}: $count" }
+    return "$header\n$lines"
 }
 
 /**
@@ -205,7 +177,7 @@ fun Bitmap.toLuminance(): IntArray {
  * black. Luminance is row-major ([y * w + x]); boxes use normalised [0,1]
  * coords. Pure function — unit-testable without a device.
  *
- * @param threshold gradient-magnitude cutoff (see [COUNT_EDGE_THRESHOLD]).
+ * @param threshold gradient-magnitude cutoff (see [EDGE_THRESHOLD]).
  * @return row-major packed ARGB pixels (green edge on opaque black).
  */
 fun sobelEdgesMasked(
@@ -213,7 +185,7 @@ fun sobelEdgesMasked(
     w: Int,
     h: Int,
     boxes: List<RectF>,
-    threshold: Int = COUNT_EDGE_THRESHOLD,
+    threshold: Int = EDGE_THRESHOLD,
 ): IntArray {
     val out = IntArray(w * h)
     if (w < 3 || h < 3) {
@@ -251,7 +223,7 @@ fun sobelEdgesMasked(
                     luminance[yp * w + xm] + 2 * luminance[yp * w + x] + luminance[yp * w + xp]
             // |Gx| + |Gy| is the cheap L1 approximation of gradient magnitude.
             val mag = (if (gx < 0) -gx else gx) + (if (gy < 0) -gy else gy)
-            out[i] = if (mag >= threshold) COUNT_EDGE_COLOR else Color.BLACK
+            out[i] = if (mag >= threshold) EDGE_COLOR else Color.BLACK
         }
     }
     return out
@@ -266,10 +238,10 @@ fun sobelEdgesMasked(
  *
  * @param downscale 1 = full resolution, 2 = half resolution (4x fewer pixels).
  */
-fun Bitmap.applyCountEdges(
+fun Bitmap.applyEdgeDetection(
     detections: List<Detection>,
     downscale: Int = 2,
-    threshold: Int = COUNT_EDGE_THRESHOLD,
+    threshold: Int = EDGE_THRESHOLD,
 ): Bitmap {
     val tw = (width / downscale).coerceAtLeast(1)
     val th = (height / downscale).coerceAtLeast(1)

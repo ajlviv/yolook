@@ -73,7 +73,8 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/tvStats" />
 
-    <!-- Mode toggle: 'D' = default detect view, 'C' = count view. Docked above the snapshot FAB. -->
+    <!-- Count toggle: 'D' = detect labels, 'C' = count numbers inside boxes.
+         Toggles object counting only; the view mode is untouched. Docked above the snapshot FAB. -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/fabModeToggle"
         android:layout_width="56dp"

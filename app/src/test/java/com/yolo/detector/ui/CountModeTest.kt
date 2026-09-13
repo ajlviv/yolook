@@ -2,15 +2,16 @@ package com.yolo.detector.ui
 
 import android.graphics.RectF
 import com.yolo.detector.data.Detection
+import com.yolo.detector.ui.overlay.countLabelFor
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * Unit tests for count-mode helpers in ViewModeEffects: the cumulative
- * [CountTally], the [formatCountStats] HUD formatter, and the pure Sobel
- * edge-mask ([sobelEdgesMasked]).
+ * Unit tests for the Live-tab count toggle ([countByClass],
+ * [formatCountStats], [countLabelFor]) and the pure Sobel edge-mask
+ * ([sobelEdgesMasked]) behind the Edge Detection view mode.
  */
 class CountModeTest {
 
@@ -25,44 +26,23 @@ class CountModeTest {
     private fun det(trackId: Int, classId: Int) =
         Detection(trackId, classId, 0.9f, box(0f, 0f, 0.5f, 0.5f), 100L)
 
-    // ── CountTally ─────────────────────────────────────────────────────────
+    // ── countByClass (per-frame, not cumulative) ─────────────────────────────
 
     @Test
-    fun tally_countsEachTrackOnce() {
-        val tally = CountTally()
-        assertTrue(tally.update(listOf(det(1, 2), det(2, 2))))
-        assertEquals(2, tally.total())
-        // Same tracks next frame: no change.
-        assertFalse(tally.update(listOf(det(1, 2), det(2, 2))))
-        assertEquals(2, tally.total())
+    fun countByClass_reflectsOnlyCurrentFrame() {
+        val frame1 = listOf(det(1, 2), det(2, 2), det(3, 0))
+        assertEquals(listOf(2 to 2, 0 to 1), countByClass(frame1))
+        // Next frame with different objects: no memory of the previous frame.
+        val frame2 = listOf(det(4, 0))
+        assertEquals(listOf(0 to 1), countByClass(frame2))
+        assertTrue(countByClass(emptyList()).isEmpty())
     }
 
     @Test
-    fun tally_ignoresUntrackedDetections() {
-        val tally = CountTally()
-        assertFalse(tally.update(listOf(det(-1, 2))))
-        assertEquals(0, tally.total())
-    }
-
-    @Test
-    fun tally_groupsByClassAndSortsDescending() {
-        val tally = CountTally()
-        tally.update(listOf(det(1, 0), det(2, 2), det(3, 2)))
-        val snap = tally.snapshot()
-        assertEquals(2, snap.size)
-        assertEquals(2 to 2, snap[0]) // car x2 first
-        assertEquals(0 to 1, snap[1])
-    }
-
-    @Test
-    fun tally_clearResetsCounts() {
-        val tally = CountTally()
-        tally.update(listOf(det(1, 2)))
-        tally.clear()
-        assertEquals(0, tally.total())
-        assertTrue(tally.snapshot().isEmpty())
-        // Previously seen track IDs are forgotten, so they count again.
-        assertTrue(tally.update(listOf(det(1, 2))))
+    fun countByClass_countsUntrackedToo() {
+        // Per-frame counting includes every detection, tracked or not.
+        val counts = countByClass(listOf(det(-1, 2), det(-1, 2)))
+        assertEquals(listOf(2 to 2), counts)
     }
 
     // ── formatCountStats ───────────────────────────────────────────────────
@@ -72,16 +52,27 @@ class CountModeTest {
         val text = formatCountStats(10f, 25L, emptyList())
         assertTrue(text.startsWith("FPS: "))
         assertTrue(text.contains("Latency: 25ms"))
-        assertTrue(text.contains("Total: 0"))
+        assertTrue(text.contains("Objects: 0"))
         assertFalse(text.contains("\n"))
     }
 
     @Test
     fun format_listsPerClassCounts() {
         val text = formatCountStats(8.5f, 40L, listOf(2 to 3, 0 to 1))
-        assertTrue(text.contains("Total: 4"))
+        assertTrue(text.contains("Objects: 4"))
         assertTrue(text.contains("car: 3"))
         assertTrue(text.contains("person: 1"))
+    }
+
+    // ── countLabelFor (in-box running numbers) ─────────────────────────────
+
+    @Test
+    fun countLabel_showsRunningNumber() {
+        assertEquals("1", countLabelFor(1))
+        assertEquals("2", countLabelFor(2))
+        assertEquals("12", countLabelFor(12))
+        // Defensive clamp: never blank.
+        assertEquals("1", countLabelFor(0))
     }
 
     // ── sobelEdgesMasked ───────────────────────────────────────────────────
