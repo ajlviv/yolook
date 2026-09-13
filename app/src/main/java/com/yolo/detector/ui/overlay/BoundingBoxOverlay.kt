@@ -13,7 +13,11 @@ import com.yolo.detector.data.labelFor
  * Transparent overlay [View] that draws YOLO bounding boxes on top of the camera preview.
  *
  * Boxes are drawn in normalised coordinates [0,1] that are scaled to the view's pixel size.
- * Each box shows: class label, track ID, and confidence score.
+ *
+ * Two label styles (see [countLabelsEnabled]):
+ * - Detect style: label above the box — class label, track ID, confidence.
+ * - Count style:  per-object running number drawn **inside** the box
+ *   ("1", "2", … in frame order) with per-class counts shown in the stats HUD.
  *
  * Vehicle class colours:
  * - Car (2):         Green  #00E676
@@ -65,6 +69,19 @@ class BoundingBoxOverlay @JvmOverloads constructor(
 
     private var detections: List<Detection> = emptyList()
 
+    /**
+     * When true, boxes show a per-object running number ("1", "2", …) drawn
+     * inside the box instead of the detect-style label above it. This is a
+     * pure display switch — no state is kept, and the view mode is untouched.
+     */
+    var countLabelsEnabled: Boolean = false
+        set(value) {
+            if (field != value) {
+                field = value
+                postInvalidate()
+            }
+        }
+
     /** Updates the overlay with a new frame's detections and triggers a redraw. */
     fun setDetections(dets: List<Detection>) {
         detections = dets
@@ -79,7 +96,7 @@ class BoundingBoxOverlay @JvmOverloads constructor(
         canvas.save()
         canvas.clipRect(0f, 0f, w, h)
 
-        for (det in detections) {
+        for ((index, det) in detections.withIndex()) {
             val color = getColorForClass(det.classId)
 
             val left   = det.bbox.left   * w
@@ -90,6 +107,12 @@ class BoundingBoxOverlay @JvmOverloads constructor(
             // ── Bounding box ───────────────────────────────────────────────────
             boxPaint.color = color
             canvas.drawRect(left, top, right, bottom, boxPaint)
+
+            if (countLabelsEnabled) {
+                // ── Count number inside the box ────────────────────────────────
+                drawCountNumber(canvas, index + 1, left, top, right, bottom, color)
+                continue
+            }
 
             // ── Label background ───────────────────────────────────────────────
             val label = buildLabel(det)
@@ -116,4 +139,38 @@ class BoundingBoxOverlay @JvmOverloads constructor(
         val conf = (det.confidence * 100).toInt()
         return "$cls $id ${conf}%"
     }
+
+    /**
+     * Draws the per-object running number ("1", "2", …) centred inside the
+     * box: a filled circle in the box colour with a contrasting white number.
+     * The radius is clamped to the box size so small boxes still fit.
+     */
+    private fun drawCountNumber(
+        canvas: Canvas,
+        number: Int,
+        left: Float,
+        top: Float,
+        right: Float,
+        bottom: Float,
+        color: Int,
+    ) {
+        val text = countLabelFor(number)
+        val textBounds = Rect()
+        labelPaint.getTextBounds(text, 0, text.length, textBounds)
+        val radius = (maxOf(textBounds.width(), textBounds.height()) / 2f + 14f)
+            .coerceAtMost(minOf(right - left, bottom - top) / 2f)
+            .coerceAtLeast(1f)
+        val cx = (left + right) / 2f
+        val cy = (top + bottom) / 2f
+        labelBgPaint.color = color
+        canvas.drawCircle(cx, cy, radius, labelBgPaint)
+        // Vertically centre the text on the circle.
+        canvas.drawText(text, cx - textBounds.width() / 2f, cy + textBounds.height() / 2f, labelPaint)
+    }
 }
+
+/**
+ * Display text for the per-object running number inside count-mode boxes.
+ * Pure helper so the numbering format is unit-testable.
+ */
+fun countLabelFor(number: Int): String = number.coerceAtLeast(1).toString()
