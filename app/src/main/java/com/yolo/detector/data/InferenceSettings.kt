@@ -30,4 +30,34 @@ data class InferenceSettings(
 
     /** How detections are drawn on the live overlay and frame. */
     val detectionView: DetectionView = DetectionView.LABELS,
+
+    // ── Per-view-mode rendering quality ────────────────────────────────────
+
+    /**
+     * Edge detection sensitivity: minimum gradient magnitude to draw an edge.
+     * Higher = fewer, stronger edges; lower = specklier, finer detail. Range [30, 200].
+     */
+    val edgeThreshold: Int = 100,
+
+    /**
+     * Edge render detail level in [1, 3]: higher = finer grid but more work.
+     * Maps to the bake downscale (1 → 4×, 2 → 3×, 3 → 2× downscale).
+     */
+    val edgeDetail: Int = 3,
+
+    /**
+     * Heatmap render detail level in [1, 3]: higher = finer grid but more work.
+     * Maps to the bake downscale (1 → 6×, 2 → 4×, 3 → 2× downscale).
+     */
+    val heatmapDetail: Int = 3,
+
+    /**
+     * Matrix glyph-grid size as a detail level in [1, 10]: higher = smaller
+     * (finer) glyph cells, i.e. more recognizable but slightly more work.
+     * Maps to cell size 16-down to 6 px.
+     */
+    val matrixDetail: Int = 8,
+
+    /** Matrix shadow brightness gamma in [0.5, 1.0]: lower = brighter shadows. */
+    val matrixGamma: Float = 0.74f,
 )

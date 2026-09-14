@@ -321,7 +321,7 @@ private val MATRIX_GLYPHS: String =
     " .'`:,-_=+*^/\\<>#%&@アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホ"
 
 /** Gamma < 1 lifts mid-tones so shadowed regions still render readable glyphs. */
-private const val MATRIX_GAMMA: Double = 1.0 / 1.35
+const val DEFAULT_MATRIX_GAMMA: Float = 0.74f
 
 /**
  * Returns a Matrix-style rendition of this bitmap: the frame is broken into a
@@ -342,10 +342,18 @@ private const val MATRIX_GAMMA: Double = 1.0 / 1.35
  * `this` is not modified or recycled; the caller owns the returned bitmap.
  *
  * @param downscale 1 = full resolution, 2 = half (4x fewer pixels), etc. The
- *   glyph grid size is [MATRIX_CELL_SIZE] in the baked frame, so larger
- *   downscales yield chunkier glyphs and faster baking.
+ *   glyph grid size is [cellSize] in the baked frame, so a larger downscale
+ *   yields chunkier glyphs and faster baking.
+ * @param cellSize side in px of one glyph cell in the baked frame; smaller gives
+ *   a finer, more readable grid but slightly more per-frame work.
+ * @param gamma < 1 lifts mid-tones so shadowed regions stay readable; use 1f
+ *   (or higher) for more contrast with darker shadows.
  */
-fun Bitmap.applyMatrixEffect(downscale: Int = 2): Bitmap {
+fun Bitmap.applyMatrixEffect(
+    downscale: Int = 2,
+    cellSize: Int = MATRIX_CELL_SIZE,
+    gamma: Float = DEFAULT_MATRIX_GAMMA,
+): Bitmap {
     val tw = (width / downscale).coerceAtLeast(1)
     val th = (height / downscale).coerceAtLeast(1)
     val small = if (tw != width || th != height) {
@@ -368,7 +376,7 @@ fun Bitmap.applyMatrixEffect(downscale: Int = 2): Bitmap {
     val canvas = Canvas(out)
     canvas.drawColor(Color.BLACK)
 
-    val cell = MATRIX_CELL_SIZE
+    val cell = cellSize.coerceAtLeast(1)
     val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         textAlign = Paint.Align.CENTER
@@ -411,7 +419,7 @@ fun Bitmap.applyMatrixEffect(downscale: Int = 2): Bitmap {
             // mild gamma lift so shadows stay visible. One extra multiply per cell.
             val t = lum / 255f
             val c = t * t * (3f - 2f * t)
-            val v = (255.0 * Math.pow(c.toDouble(), MATRIX_GAMMA)).toInt().coerceIn(0, 255)
+            val v = (255.0 * Math.pow(c.toDouble(), gamma.toDouble())).toInt().coerceIn(0, 255)
             val gi = (v * glyphCount / 255).coerceIn(0, glyphCount)
             val g = 100 + (v * 150) / 255 // 100 (dim) .. 250 (bright), always readable
             // Slightly yellow-green like the film's #4AF626.

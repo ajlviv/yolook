@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.*
 import androidx.datastore.preferences.preferencesDataStore
+import com.yolo.detector.util.snapToStep
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.map
@@ -45,6 +46,11 @@ class SettingsRepository(context: Context) {
         val VIEW_MODE = stringPreferencesKey("view_mode")
         // Stored as the enum name, e.g. "COUNT"
         val DETECTION_VIEW = stringPreferencesKey("detection_view")
+        val EDGE_THRESHOLD = intPreferencesKey("edge_threshold")
+        val EDGE_DETAIL = intPreferencesKey("edge_detail")
+        val HEATMAP_DETAIL = intPreferencesKey("heatmap_detail")
+        val MATRIX_DETAIL = intPreferencesKey("matrix_detail")
+        val MATRIX_GAMMA = floatPreferencesKey("matrix_gamma")
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -73,6 +79,11 @@ class SettingsRepository(context: Context) {
             classFilter = filterIds,
             viewMode = this[Keys.VIEW_MODE]?.toViewMode() ?: ViewMode.NORMAL,
             detectionView = this[Keys.DETECTION_VIEW]?.toDetectionView() ?: DetectionView.LABELS,
+            edgeThreshold = this[Keys.EDGE_THRESHOLD] ?: 100,
+            edgeDetail = this[Keys.EDGE_DETAIL] ?: 3,
+            heatmapDetail = this[Keys.HEATMAP_DETAIL] ?: 3,
+            matrixDetail = this[Keys.MATRIX_DETAIL] ?: 8,
+            matrixGamma = snapToStep(this[Keys.MATRIX_GAMMA] ?: 0.74f, 0.5f, 1f, 0.01f),
         )
     }
 
@@ -114,6 +125,27 @@ class SettingsRepository(context: Context) {
 
     suspend fun setDetectionView(view: DetectionView) {
         dataStore.edit { it[Keys.DETECTION_VIEW] = view.name }
+    }
+
+    suspend fun setEdgeThreshold(value: Int) {
+        dataStore.edit { it[Keys.EDGE_THRESHOLD] = value.coerceIn(30, 200) }
+    }
+
+    suspend fun setEdgeDetail(value: Int) {
+        dataStore.edit { it[Keys.EDGE_DETAIL] = value.coerceIn(1, 3) }
+    }
+
+    suspend fun setHeatmapDetail(value: Int) {
+        dataStore.edit { it[Keys.HEATMAP_DETAIL] = value.coerceIn(1, 3) }
+    }
+
+    suspend fun setMatrixDetail(value: Int) {
+        dataStore.edit { it[Keys.MATRIX_DETAIL] = value.coerceIn(1, 10) }
+    }
+
+    suspend fun setMatrixGamma(value: Float) {
+        val snapped = snapToStep(value, 0.5f, 1f, 0.01f)
+        dataStore.edit { it[Keys.MATRIX_GAMMA] = snapped }
     }
 
     /** Resets all settings to factory defaults by clearing the DataStore. */

@@ -66,6 +66,15 @@ class LiveFragment : Fragment() {
     private var pendingMatrixFrame: Bitmap? = null
     private var matrixWorker: Job? = null
 
+    // Quality parameters for the bake loops, kept in sync with the persisted
+    // Settings. Read on the main thread when each bake is launched, so changes
+    // take effect on the next incoming frame.
+    private var currentEdgeThreshold: Int = 100
+    private var currentEdgeDetail: Int = 3
+    private var currentHeatmapDetail: Int = 3
+    private var currentMatrixDetail: Int = 8
+    private var currentMatrixGamma: Float = 0.74f
+
     // Objects-only detection view: same worker pattern; reuses the edge
     // worker when Edge Detection view is active, otherwise its own.
     private var pendingObjectsOnlyFrame: Bitmap? = null
@@ -98,6 +107,14 @@ class LiveFragment : Fragment() {
         binding.overlay.detectionView = viewModel.currentSettingsSnapshot.detectionView
         currentMode = viewModel.currentSettingsSnapshot.viewMode
         currentDetectionView = viewModel.currentSettingsSnapshot.detectionView
+        // Pre-seed the bake-quality params from the persisted snapshot so the
+        // first bakes (before settingsFlow emits) already use stored values.
+        val seed = viewModel.currentSettingsSnapshot
+        currentEdgeThreshold = seed.edgeThreshold
+        currentEdgeDetail = seed.edgeDetail
+        currentHeatmapDetail = seed.heatmapDetail
+        currentMatrixDetail = seed.matrixDetail
+        currentMatrixGamma = seed.matrixGamma
 
         // Bind camera to this fragment's lifecycle; preview goes into the PreviewView.
         viewModel.bindCamera(viewLifecycleOwner, binding.previewView)
@@ -133,6 +150,11 @@ class LiveFragment : Fragment() {
                     viewModel.settingsFlow.collect { settings ->
                         applyViewMode(settings.viewMode)
                         applyDetectionView(settings.detectionView)
+                        currentEdgeThreshold = settings.edgeThreshold
+                        currentEdgeDetail = settings.edgeDetail
+                        currentHeatmapDetail = settings.heatmapDetail
+                        currentMatrixDetail = settings.matrixDetail
+                        currentMatrixGamma = settings.matrixGamma
                     }
                 }
                 launch {
@@ -208,6 +230,23 @@ class LiveFragment : Fragment() {
             }
         }
     }
+    /** Maps an edge-detail level (1..3) to a bake downscale: 1 → 4x, 2 → 3x, 3 → 2x. */
+    private fun edgeDownscale(level: Int) = when (level) {
+        1 -> 4
+        2 -> 3
+        else -> 2
+    }
+
+    /** Maps a heatmap-detail level (1..3) to a bake downscale: 1 → 6x, 2 → 4x, 3 → 2x. */
+    private fun heatmapDownscale(level: Int) = when (level) {
+        1 -> 6
+        2 -> 4
+        else -> 2
+    }
+
+    /** Maps a matrix-detail level (1..10) to a glyph cell size: higher = finer. */
+    private fun matrixCellSize(detail: Int) = (16 - detail).coerceIn(6, 15)
+
     /** Switches between the raw preview and the filtered frame renderer overlay. */
     private fun applyViewMode(mode: ViewMode) {
         if (mode == currentMode) {
@@ -327,7 +366,7 @@ class LiveFragment : Fragment() {
                 try {
                     withContext(Dispatchers.Default) {
                         // Synchronous bake. applyHeatmap does NOT recycle the source.
-                        holder[0] = frame.applyHeatmap()
+                        holder[0] = frame.applyHeatmap(downscale = heatmapDownscale(currentHeatmapDetail))
                     }
                     val baked = holder[0] ?: return
                     if (currentMode != ViewMode.HEATMAP || !currentCoroutineContext().isActive) {
@@ -407,7 +446,11 @@ class LiveFragment : Fragment() {
                 try {
                     withContext(Dispatchers.Default) {
                         // Synchronous bake. applyEdgeDetection never recycles the source.
-                        holder[0] = frame.applyEdgeDetection(boxes)
+                        holder[0] = frame.applyEdgeDetection(
+                            boxes,
+                            downscale = edgeDownscale(currentEdgeDetail),
+                            threshold = currentEdgeThreshold,
+                        )
                     }
                     val baked = holder[0] ?: return
                     if (currentMode != ViewMode.EDGE || !currentCoroutineContext().isActive) {
@@ -522,7 +565,10 @@ class LiveFragment : Fragment() {
                 val holder = arrayOfNulls<Bitmap>(1)
                 try {
                     withContext(Dispatchers.Default) {
-                        holder[0] = frame.applyMatrixEffect()
+                        holder[0] = frame.applyMatrixEffect(
+                            cellSize = matrixCellSize(currentMatrixDetail),
+                            gamma = currentMatrixGamma,
+                        )
                     }
                     val baked = holder[0] ?: return
                     if (currentMode != ViewMode.MATRIX || !currentCoroutineContext().isActive) {
