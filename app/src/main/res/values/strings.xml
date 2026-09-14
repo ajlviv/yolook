@@ -32,12 +32,29 @@
     <string name="view_mode_invert">Invert</string>
     <string name="view_mode_heatmap">Heatmap</string>
     <string name="view_mode_edge">Edge detection</string>
+    <string name="view_mode_matrix">Matrix</string>
+    <string name="settings_edge_quality">Edge rendering</string>
+    <string name="settings_edge_sensitivity">Edge sensitivity</string>
+    <string name="settings_render_quality">Rendering detail</string>
+    <string name="settings_detail_low">Lower (faster)</string>
+    <string name="settings_detail_medium">Medium</string>
+    <string name="settings_detail_high">Higher (detailed)</string>
+    <string-array name="render_detail_levels">
+        <item>@string/settings_detail_low</item>
+        <item>@string/settings_detail_medium</item>
+        <item>@string/settings_detail_high</item>
+    </string-array>
+    <string name="settings_heatmap_quality">Heatmap rendering</string>
+    <string name="settings_matrix_quality">Matrix rendering</string>
+    <string name="settings_matrix_detail">Glyph detail</string>
+    <string name="settings_matrix_shadow_brightness">Shadow brightness</string>
     <string-array name="view_modes">
         <item>@string/view_mode_normal</item>
         <item>@string/view_mode_black_white</item>
         <item>@string/view_mode_invert</item>
         <item>@string/view_mode_heatmap</item>
         <item>@string/view_mode_edge</item>
+        <item>@string/view_mode_matrix</item>
     </string-array>
     <string name="permission_rationale">Camera permission is required to run the live detector.</string>
     <string name="snapshot_saved">Snapshot saved to gallery</string>

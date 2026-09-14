@@ -1,10 +1,13 @@
 package com.yolo.detector.ui
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.graphics.RectF
+import android.graphics.Typeface
 import com.yolo.detector.data.Detection
 import com.yolo.detector.data.labelFor
 
@@ -299,5 +302,136 @@ fun Bitmap.applyEdgeDetection(
     val pixels = sobelEdgesMasked(gray, tw, th, boxes, threshold)
     small.setPixels(pixels, 0, tw, 0, 0, tw, th)
     return small
+}
+
+/**
+ * Side (px, in the baked reduced frame) of one Matrix glyph grid cell.
+ * Smaller = a finer, more readable grid (more glyphs per frame). 8px keeps the
+ * per-frame glyph count modest so the bake stays cheap on a background thread.
+ */
+const val MATRIX_CELL_SIZE: Int = 8
+
+/**
+ * Glyph ramp for the Matrix effect, ordered sparse (dim) → dense (bright) so a
+ * cell's brightness maps monotonically to glyph density. The leading space keeps
+ * near-black cells empty; ASCII tone characters give smooth mid-tones; katakana
+ * at the bright end supplies the movie's recognizable "digital rain" glyphs.
+ */
+private val MATRIX_GLYPHS: String =
+    " .'`:,-_=+*^/\\<>#%&@アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホ"
+
+/** Gamma < 1 lifts mid-tones so shadowed regions still render readable glyphs. */
+const val DEFAULT_MATRIX_GAMMA: Float = 0.74f
+
+/**
+ * Returns a Matrix-style rendition of this bitmap: the frame is broken into a
+ * grid and each cell's brightness maps to a bright-green glyph drawn on an
+ * opaque black background, emulating the movie's "digital rain" (CCTV) look.
+ *
+ * Per-cell brightness is a 50/50 blend of the cell's average and maximum
+ * luminance. Blending in the max preserves thin bright features — limbs, text,
+ * object edges — that a pure average would wash out, which is what makes the
+ * resulting shapes readable. The blended value passes through an S-curve
+ * contrast stage plus a mild gamma lift for crisp mid-tone separation, then maps
+ * to glyph density and green brightness. Each glyph is monospace-sized and
+ * FontMetrics-centered within its cell so rows tile cleanly into a crisp,
+ * terminal-like ASCII render.
+ *
+ * Baked at reduced resolution for speed and scaled up by the ImageView.
+ *
+ * `this` is not modified or recycled; the caller owns the returned bitmap.
+ *
+ * @param downscale 1 = full resolution, 2 = half (4x fewer pixels), etc. The
+ *   glyph grid size is [cellSize] in the baked frame, so a larger downscale
+ *   yields chunkier glyphs and faster baking.
+ * @param cellSize side in px of one glyph cell in the baked frame; smaller gives
+ *   a finer, more readable grid but slightly more per-frame work.
+ * @param gamma < 1 lifts mid-tones so shadowed regions stay readable; use 1f
+ *   (or higher) for more contrast with darker shadows.
+ */
+fun Bitmap.applyMatrixEffect(
+    downscale: Int = 2,
+    cellSize: Int = MATRIX_CELL_SIZE,
+    gamma: Float = DEFAULT_MATRIX_GAMMA,
+): Bitmap {
+    val tw = (width / downscale).coerceAtLeast(1)
+    val th = (height / downscale).coerceAtLeast(1)
+    val small = if (tw != width || th != height) {
+        Bitmap.createScaledBitmap(this, tw, th, true)
+    } else {
+        this.copy(Bitmap.Config.ARGB_8888, true)
+    }
+
+    val srcPixels = IntArray(tw * th)
+    small.getPixels(srcPixels, 0, tw, 0, 0, tw, th)
+    // Rec.601 luminance per pixel, reused for the per-cell brightness below.
+    val gray = IntArray(tw * th) { i ->
+        val p = srcPixels[i]
+        (0.2126f * ((p shr 16) and 0xFF) +
+                0.7152f * ((p shr 8) and 0xFF) +
+                0.0722f * (p and 0xFF)).toInt()
+    }
+
+    val out = Bitmap.createBitmap(tw, th, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(out)
+    canvas.drawColor(Color.BLACK)
+
+    val cell = cellSize.coerceAtLeast(1)
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        textAlign = Paint.Align.CENTER
+        // Monospace glyph sized to one row; glyphs are vertically centered per
+        // cell below via FontMetrics so rows tile cleanly instead of bleeding
+        // into each other (which made the effect look muddy before).
+        textSize = cell.toFloat()
+    }
+    // Baseline that centers the glyph's ink within its cell, giving a crisp,
+    // even "terminal" look rather than cramped, vertically-overlapping rows.
+    val fm = paint.fontMetrics
+    val baselineOffset = (cell - (fm.descent - fm.ascent)) * 0.5f - fm.ascent
+    val glyphs = MATRIX_GLYPHS
+    val glyphCount = glyphs.length - 1
+
+    var gy = 0
+    while (gy < th) {
+        var gx = 0
+        while (gx < tw) {
+            val xEnd = (gx + cell).coerceAtMost(tw)
+            val yEnd = (gy + cell).coerceAtMost(th)
+            // Average AND max luminance in one pass; blending them keeps thin
+            // bright features (limbs, text, edges) bled across the cell so fine
+            // objects stay recognizable instead of averaging into flat blobs.
+            var sum = 0L
+            var max = 0
+            for (y in gy until yEnd) {
+                val row = y * tw
+                for (x in gx until xEnd) {
+                    val v = gray[row + x]
+                    sum += v
+                    if (v > max) max = v
+                }
+            }
+            val n = (xEnd - gx) * (yEnd - gy)
+            val avg = (sum / n).toInt()
+            val lum = ((avg + max) / 2).coerceIn(0, 255)
+
+            // S-curve (smoothstep) contrast for sharper mid-tone separation, then a
+            // mild gamma lift so shadows stay visible. One extra multiply per cell.
+            val t = lum / 255f
+            val c = t * t * (3f - 2f * t)
+            val v = (255.0 * Math.pow(c.toDouble(), gamma.toDouble())).toInt().coerceIn(0, 255)
+            val gi = (v * glyphCount / 255).coerceIn(0, glyphCount)
+            val g = 100 + (v * 150) / 255 // 100 (dim) .. 250 (bright), always readable
+            // Slightly yellow-green like the film's #4AF626.
+            paint.color = (255 shl 24) or (g * 2 / 5 shl 16) or (g shl 8) or (g * 2 / 5)
+
+            canvas.drawText(glyphs[gi].toString(), (gx + cell * 0.5f), (gy + baselineOffset), paint)
+            gx += cell
+        }
+        gy += cell
+    }
+
+    small.recycle()
+    return out
 }
 

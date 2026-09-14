@@ -45,6 +45,10 @@ class SettingsFragment : Fragment() {
     // Same guard for the detection-view spinner (see setDetectionView()).
     private var currentDetectionViewOrdinal = DetectionView.LABELS.ordinal
 
+    // Same guard pattern for the render-detail spinners.
+    private var currentEdgeDetailOrdinal = 2   // default detail 3 → index 2
+    private var currentHeatmapDetailOrdinal = 2
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -61,6 +65,7 @@ class SettingsFragment : Fragment() {
         setupClassFilterCheckboxes()
         setupViewModeSpinner()
         setupDetectionViewSpinner()
+        setupRenderDetailSpinners()
         setupListeners()
         observeSettings()
     }
@@ -97,6 +102,38 @@ class SettingsFragment : Fragment() {
                 if (position == currentDetectionViewOrdinal) return
                 currentDetectionViewOrdinal = position
                 viewModel.setDetectionView(DetectionView.entries[position])
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) {}
+        }
+    }
+
+    private fun setupRenderDetailSpinners() {
+        val levels = resources.getStringArray(R.array.render_detail_levels).toList()
+        val adapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            levels,
+        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+        binding.spEdgeDetail.adapter = adapter
+        binding.spHeatmapDetail.adapter = adapter
+
+        binding.spEdgeDetail.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                if (position == currentEdgeDetailOrdinal) return
+                currentEdgeDetailOrdinal = position
+                viewModel.setEdgeDetail(position + 1)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) {}
+        }
+
+        binding.spHeatmapDetail.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                if (position == currentHeatmapDetailOrdinal) return
+                currentHeatmapDetailOrdinal = position
+                viewModel.setHeatmapDetail(position + 1)
             }
 
             override fun onNothingSelected(parent: AdapterView<*>) {}
@@ -184,6 +221,33 @@ class SettingsFragment : Fragment() {
         binding.btnResetDefaults.setOnClickListener {
             viewModel.resetSettings()
         }
+
+        binding.sliderEdgeThreshold.addOnChangeListener { slider, value, fromUser ->
+            if (fromUser) {
+                val snapped = value.toInt()
+                binding.sliderEdgeThreshold.value = snapped.toFloat()
+                binding.tvEdgeThreshold.text = "$snapped"
+                viewModel.setEdgeThreshold(snapped)
+            }
+        }
+
+        binding.sliderMatrixDetail.addOnChangeListener { slider, value, fromUser ->
+            if (fromUser) {
+                val snapped = value.toInt().coerceIn(1, 10)
+                binding.sliderMatrixDetail.value = snapped.toFloat()
+                binding.tvMatrixDetail.text = "$snapped/10"
+                viewModel.setMatrixDetail(snapped)
+            }
+        }
+
+        binding.sliderMatrixGamma.addOnChangeListener { slider, value, fromUser ->
+            if (fromUser) {
+                val snapped = snapToStep(value, 0.5f, 1f, 0.01f)
+                binding.sliderMatrixGamma.value = snapped
+                binding.tvMatrixGamma.text = "${(snapped * 100).toInt()}%"
+                viewModel.setMatrixGamma(snapped)
+            }
+        }
     }
 
     private fun observeSettings() {
@@ -217,6 +281,29 @@ class SettingsFragment : Fragment() {
 
                     currentDetectionViewOrdinal = settings.detectionView.ordinal
                     binding.spDetectionView.setSelection(settings.detectionView.ordinal)
+
+                    // Show only the quality controls belonging to the active view mode.
+                    binding.layoutEdgeQuality.visibility =
+                        if (settings.viewMode == ViewMode.EDGE) View.VISIBLE else View.GONE
+                    binding.layoutHeatmapQuality.visibility =
+                        if (settings.viewMode == ViewMode.HEATMAP) View.VISIBLE else View.GONE
+                    binding.layoutMatrixQuality.visibility =
+                        if (settings.viewMode == ViewMode.MATRIX) View.VISIBLE else View.GONE
+
+                    binding.sliderEdgeThreshold.value = settings.edgeThreshold.toFloat()
+                    binding.tvEdgeThreshold.text = "${settings.edgeThreshold}"
+                    currentEdgeDetailOrdinal = settings.edgeDetail - 1
+                    binding.spEdgeDetail.setSelection(settings.edgeDetail - 1)
+
+                    currentHeatmapDetailOrdinal = settings.heatmapDetail - 1
+                    binding.spHeatmapDetail.setSelection(settings.heatmapDetail - 1)
+
+                    binding.sliderMatrixDetail.value = settings.matrixDetail.toFloat()
+                    binding.tvMatrixDetail.text = "${settings.matrixDetail}/10"
+
+                    val snappedGamma = snapToStep(settings.matrixGamma, 0.5f, 1f, 0.01f)
+                    binding.sliderMatrixGamma.value = snappedGamma
+                    binding.tvMatrixGamma.text = "${(snappedGamma * 100).toInt()}%"
                 }
             }
         }

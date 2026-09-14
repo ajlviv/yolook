@@ -17,6 +17,7 @@ import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.ui.ViewModeEffects
 import com.yolo.detector.ui.applyEdgeDetection
 import com.yolo.detector.ui.applyHeatmap
+import com.yolo.detector.ui.applyMatrixEffect
 import com.yolo.detector.ui.applyObjectsOnlyMask
 import com.yolo.detector.ui.countByClass
 import com.yolo.detector.ui.formatCountStats
@@ -61,6 +62,19 @@ class LiveFragment : Fragment() {
     private var pendingEdgeFrame: Bitmap? = null
     private var edgeWorker: Job? = null
 
+    // Matrix view: serial bake worker (same drop-oldest pattern as others).
+    private var pendingMatrixFrame: Bitmap? = null
+    private var matrixWorker: Job? = null
+
+    // Quality parameters for the bake loops, kept in sync with the persisted
+    // Settings. Read on the main thread when each bake is launched, so changes
+    // take effect on the next incoming frame.
+    private var currentEdgeThreshold: Int = 100
+    private var currentEdgeDetail: Int = 3
+    private var currentHeatmapDetail: Int = 3
+    private var currentMatrixDetail: Int = 8
+    private var currentMatrixGamma: Float = 0.74f
+
     // Objects-only detection view: same worker pattern; reuses the edge
     // worker when Edge Detection view is active, otherwise its own.
     private var pendingObjectsOnlyFrame: Bitmap? = null
@@ -93,6 +107,14 @@ class LiveFragment : Fragment() {
         binding.overlay.detectionView = viewModel.currentSettingsSnapshot.detectionView
         currentMode = viewModel.currentSettingsSnapshot.viewMode
         currentDetectionView = viewModel.currentSettingsSnapshot.detectionView
+        // Pre-seed the bake-quality params from the persisted snapshot so the
+        // first bakes (before settingsFlow emits) already use stored values.
+        val seed = viewModel.currentSettingsSnapshot
+        currentEdgeThreshold = seed.edgeThreshold
+        currentEdgeDetail = seed.edgeDetail
+        currentHeatmapDetail = seed.heatmapDetail
+        currentMatrixDetail = seed.matrixDetail
+        currentMatrixGamma = seed.matrixGamma
 
         // Bind camera to this fragment's lifecycle; preview goes into the PreviewView.
         viewModel.bindCamera(viewLifecycleOwner, binding.previewView)
@@ -128,6 +150,11 @@ class LiveFragment : Fragment() {
                     viewModel.settingsFlow.collect { settings ->
                         applyViewMode(settings.viewMode)
                         applyDetectionView(settings.detectionView)
+                        currentEdgeThreshold = settings.edgeThreshold
+                        currentEdgeDetail = settings.edgeDetail
+                        currentHeatmapDetail = settings.heatmapDetail
+                        currentMatrixDetail = settings.matrixDetail
+                        currentMatrixGamma = settings.matrixGamma
                     }
                 }
                 launch {
@@ -143,6 +170,7 @@ class LiveFragment : Fragment() {
                             when {
                                 currentMode == ViewMode.HEATMAP -> onHeatmapFrame(bitmap)
                                 currentMode == ViewMode.EDGE -> onEdgeFrame(bitmap)
+                                currentMode == ViewMode.MATRIX -> onMatrixFrame(bitmap)
                                 currentDetectionView == DetectionView.OBJECTS_ONLY ->
                                     onObjectsOnlyFrame(bitmap)
                                 currentMode == ViewMode.NORMAL -> bitmap.recycle() // camera filtered, UI not yet updated
@@ -202,6 +230,23 @@ class LiveFragment : Fragment() {
             }
         }
     }
+    /** Maps an edge-detail level (1..3) to a bake downscale: 1 → 4x, 2 → 3x, 3 → 2x. */
+    private fun edgeDownscale(level: Int) = when (level) {
+        1 -> 4
+        2 -> 3
+        else -> 2
+    }
+
+    /** Maps a heatmap-detail level (1..3) to a bake downscale: 1 → 6x, 2 → 4x, 3 → 2x. */
+    private fun heatmapDownscale(level: Int) = when (level) {
+        1 -> 6
+        2 -> 4
+        else -> 2
+    }
+
+    /** Maps a matrix-detail level (1..10) to a glyph cell size: higher = finer. */
+    private fun matrixCellSize(detail: Int) = (16 - detail).coerceIn(6, 15)
+
     /** Switches between the raw preview and the filtered frame renderer overlay. */
     private fun applyViewMode(mode: ViewMode) {
         if (mode == currentMode) {
@@ -321,7 +366,7 @@ class LiveFragment : Fragment() {
                 try {
                     withContext(Dispatchers.Default) {
                         // Synchronous bake. applyHeatmap does NOT recycle the source.
-                        holder[0] = frame.applyHeatmap()
+                        holder[0] = frame.applyHeatmap(downscale = heatmapDownscale(currentHeatmapDetail))
                     }
                     val baked = holder[0] ?: return
                     if (currentMode != ViewMode.HEATMAP || !currentCoroutineContext().isActive) {
@@ -401,7 +446,11 @@ class LiveFragment : Fragment() {
                 try {
                     withContext(Dispatchers.Default) {
                         // Synchronous bake. applyEdgeDetection never recycles the source.
-                        holder[0] = frame.applyEdgeDetection(boxes)
+                        holder[0] = frame.applyEdgeDetection(
+                            boxes,
+                            downscale = edgeDownscale(currentEdgeDetail),
+                            threshold = currentEdgeThreshold,
+                        )
                     }
                     val baked = holder[0] ?: return
                     if (currentMode != ViewMode.EDGE || !currentCoroutineContext().isActive) {
@@ -448,7 +497,8 @@ class LiveFragment : Fragment() {
     private suspend fun runObjectsOnlyLoop() {
         try {
             while (currentDetectionView == DetectionView.OBJECTS_ONLY &&
-                currentMode != ViewMode.EDGE && currentMode != ViewMode.HEATMAP) {
+                currentMode != ViewMode.EDGE && currentMode != ViewMode.HEATMAP &&
+                currentMode != ViewMode.MATRIX) {
                 val frame = pendingObjectsOnlyFrame ?: return
                 pendingObjectsOnlyFrame = null
                 val boxes = latestDetections.map { it.bbox }
@@ -461,6 +511,7 @@ class LiveFragment : Fragment() {
                     val baked = holder[0] ?: return
                     if (currentDetectionView != DetectionView.OBJECTS_ONLY ||
                         currentMode == ViewMode.EDGE || currentMode == ViewMode.HEATMAP ||
+                        currentMode == ViewMode.MATRIX ||
                         !currentCoroutineContext().isActive) {
                         baked.recycle()
                         return
@@ -475,6 +526,65 @@ class LiveFragment : Fragment() {
             }
         } finally {
             if (currentCoroutineContext()[Job] == objectsOnlyWorker) objectsOnlyWorker = null
+        }
+    }
+
+    // ── Matrix view (digital rain) ─────────────────────────────────────────
+
+    /**
+     * Receives a Matrix-view frame. Keeps only the newest frame (drop-oldest)
+     * and hands it to the serial baker. Owns [frame] on entry; the baker
+     * recycles it.
+     */
+    private fun onMatrixFrame(frame: Bitmap) {
+        pendingMatrixFrame?.recycle()
+        pendingMatrixFrame = frame
+        ensureMatrixWorker()
+    }
+
+    /** Starts the Matrix baker if it is not already running. */
+    private fun ensureMatrixWorker() {
+        if (matrixWorker != null) return
+        matrixWorker = viewLifecycleOwner.lifecycleScope.launch {
+            runMatrixLoop()
+        }
+    }
+
+    /**
+     * Serial Matrix loop (runs on main; bakes on a background thread). Renders
+     * the frame as a grid of green glyphs, committing the newest bake and
+     * looping for any newer frame. Same main-confined ownership pattern as the
+     * heatmap loop, so the drop-oldest recycle cannot race the bake.
+     */
+    private suspend fun runMatrixLoop() {
+        try {
+            while (currentMode == ViewMode.MATRIX) {
+                val frame = pendingMatrixFrame ?: return
+                pendingMatrixFrame = null
+
+                val holder = arrayOfNulls<Bitmap>(1)
+                try {
+                    withContext(Dispatchers.Default) {
+                        holder[0] = frame.applyMatrixEffect(
+                            cellSize = matrixCellSize(currentMatrixDetail),
+                            gamma = currentMatrixGamma,
+                        )
+                    }
+                    val baked = holder[0] ?: return
+                    if (currentMode != ViewMode.MATRIX || !currentCoroutineContext().isActive) {
+                        baked.recycle()
+                        return
+                    }
+                    commitFrame(baked)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    holder[0]?.recycle()
+                    throw e
+                } finally {
+                    frame.recycle()
+                }
+            }
+        } finally {
+            if (currentCoroutineContext()[Job] == matrixWorker) matrixWorker = null
         }
     }
 
@@ -497,6 +607,10 @@ class LiveFragment : Fragment() {
         edgeWorker = null
         pendingEdgeFrame?.recycle()
         pendingEdgeFrame = null
+        matrixWorker?.cancel()
+        matrixWorker = null
+        pendingMatrixFrame?.recycle()
+        pendingMatrixFrame = null
         objectsOnlyWorker?.cancel()
         objectsOnlyWorker = null
         pendingObjectsOnlyFrame?.recycle()
@@ -568,6 +682,10 @@ class LiveFragment : Fragment() {
         edgeWorker = null
         pendingEdgeFrame?.recycle()
         pendingEdgeFrame = null
+        matrixWorker?.cancel()
+        matrixWorker = null
+        pendingMatrixFrame?.recycle()
+        pendingMatrixFrame = null
         objectsOnlyWorker?.cancel()
         objectsOnlyWorker = null
         pendingObjectsOnlyFrame?.recycle()
