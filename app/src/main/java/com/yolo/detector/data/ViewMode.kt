@@ -10,6 +10,8 @@ package com.yolo.detector.data
  * - [HEATMAP]         — intensity → hot-metal colormap (baked per pixel).
  * - [EDGE]            — Sobel edge detection masked to detection boxes, so only
  *   detected objects are drawn (green edges on black).
+ * - [MATRIX]          — Matrix-style "digital rain": the frame is rendered as a
+ *   grid of bright-green glyphs whose density follows local brightness.
  *
  * Object counting is a separate Live-tab toggle, not a view mode: it draws
  * per-object running numbers inside boxes with per-frame class counts.
@@ -23,4 +25,5 @@ enum class ViewMode {
     INVERT,
     HEATMAP,
     EDGE,
+    MATRIX,
 }

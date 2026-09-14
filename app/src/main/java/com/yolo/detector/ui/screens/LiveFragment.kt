@@ -17,6 +17,7 @@ import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.ui.ViewModeEffects
 import com.yolo.detector.ui.applyEdgeDetection
 import com.yolo.detector.ui.applyHeatmap
+import com.yolo.detector.ui.applyMatrixEffect
 import com.yolo.detector.ui.applyObjectsOnlyMask
 import com.yolo.detector.ui.countByClass
 import com.yolo.detector.ui.formatCountStats
@@ -60,6 +61,10 @@ class LiveFragment : Fragment() {
     // thread, so masking boxes align with the baked frame's inference pass.
     private var pendingEdgeFrame: Bitmap? = null
     private var edgeWorker: Job? = null
+
+    // Matrix view: serial bake worker (same drop-oldest pattern as others).
+    private var pendingMatrixFrame: Bitmap? = null
+    private var matrixWorker: Job? = null
 
     // Objects-only detection view: same worker pattern; reuses the edge
     // worker when Edge Detection view is active, otherwise its own.
@@ -143,6 +148,7 @@ class LiveFragment : Fragment() {
                             when {
                                 currentMode == ViewMode.HEATMAP -> onHeatmapFrame(bitmap)
                                 currentMode == ViewMode.EDGE -> onEdgeFrame(bitmap)
+                                currentMode == ViewMode.MATRIX -> onMatrixFrame(bitmap)
                                 currentDetectionView == DetectionView.OBJECTS_ONLY ->
                                     onObjectsOnlyFrame(bitmap)
                                 currentMode == ViewMode.NORMAL -> bitmap.recycle() // camera filtered, UI not yet updated
@@ -448,7 +454,8 @@ class LiveFragment : Fragment() {
     private suspend fun runObjectsOnlyLoop() {
         try {
             while (currentDetectionView == DetectionView.OBJECTS_ONLY &&
-                currentMode != ViewMode.EDGE && currentMode != ViewMode.HEATMAP) {
+                currentMode != ViewMode.EDGE && currentMode != ViewMode.HEATMAP &&
+                currentMode != ViewMode.MATRIX) {
                 val frame = pendingObjectsOnlyFrame ?: return
                 pendingObjectsOnlyFrame = null
                 val boxes = latestDetections.map { it.bbox }
@@ -461,6 +468,7 @@ class LiveFragment : Fragment() {
                     val baked = holder[0] ?: return
                     if (currentDetectionView != DetectionView.OBJECTS_ONLY ||
                         currentMode == ViewMode.EDGE || currentMode == ViewMode.HEATMAP ||
+                        currentMode == ViewMode.MATRIX ||
                         !currentCoroutineContext().isActive) {
                         baked.recycle()
                         return
@@ -475,6 +483,62 @@ class LiveFragment : Fragment() {
             }
         } finally {
             if (currentCoroutineContext()[Job] == objectsOnlyWorker) objectsOnlyWorker = null
+        }
+    }
+
+    // ── Matrix view (digital rain) ─────────────────────────────────────────
+
+    /**
+     * Receives a Matrix-view frame. Keeps only the newest frame (drop-oldest)
+     * and hands it to the serial baker. Owns [frame] on entry; the baker
+     * recycles it.
+     */
+    private fun onMatrixFrame(frame: Bitmap) {
+        pendingMatrixFrame?.recycle()
+        pendingMatrixFrame = frame
+        ensureMatrixWorker()
+    }
+
+    /** Starts the Matrix baker if it is not already running. */
+    private fun ensureMatrixWorker() {
+        if (matrixWorker != null) return
+        matrixWorker = viewLifecycleOwner.lifecycleScope.launch {
+            runMatrixLoop()
+        }
+    }
+
+    /**
+     * Serial Matrix loop (runs on main; bakes on a background thread). Renders
+     * the frame as a grid of green glyphs, committing the newest bake and
+     * looping for any newer frame. Same main-confined ownership pattern as the
+     * heatmap loop, so the drop-oldest recycle cannot race the bake.
+     */
+    private suspend fun runMatrixLoop() {
+        try {
+            while (currentMode == ViewMode.MATRIX) {
+                val frame = pendingMatrixFrame ?: return
+                pendingMatrixFrame = null
+
+                val holder = arrayOfNulls<Bitmap>(1)
+                try {
+                    withContext(Dispatchers.Default) {
+                        holder[0] = frame.applyMatrixEffect()
+                    }
+                    val baked = holder[0] ?: return
+                    if (currentMode != ViewMode.MATRIX || !currentCoroutineContext().isActive) {
+                        baked.recycle()
+                        return
+                    }
+                    commitFrame(baked)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    holder[0]?.recycle()
+                    throw e
+                } finally {
+                    frame.recycle()
+                }
+            }
+        } finally {
+            if (currentCoroutineContext()[Job] == matrixWorker) matrixWorker = null
         }
     }
 
@@ -497,6 +561,10 @@ class LiveFragment : Fragment() {
         edgeWorker = null
         pendingEdgeFrame?.recycle()
         pendingEdgeFrame = null
+        matrixWorker?.cancel()
+        matrixWorker = null
+        pendingMatrixFrame?.recycle()
+        pendingMatrixFrame = null
         objectsOnlyWorker?.cancel()
         objectsOnlyWorker = null
         pendingObjectsOnlyFrame?.recycle()
@@ -568,6 +636,10 @@ class LiveFragment : Fragment() {
         edgeWorker = null
         pendingEdgeFrame?.recycle()
         pendingEdgeFrame = null
+        matrixWorker?.cancel()
+        matrixWorker = null
+        pendingMatrixFrame?.recycle()
+        pendingMatrixFrame = null
         objectsOnlyWorker?.cancel()
         objectsOnlyWorker = null
         pendingObjectsOnlyFrame?.recycle()
