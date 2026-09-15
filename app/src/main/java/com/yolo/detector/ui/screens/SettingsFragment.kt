@@ -21,6 +21,7 @@ import com.yolo.detector.data.ViewMode
 import com.yolo.detector.databinding.FragmentSettingsBinding
 import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.util.snapToStep
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
@@ -67,7 +68,9 @@ class SettingsFragment : Fragment() {
         setupDetectionViewSpinner()
         setupRenderDetailSpinners()
         setupListeners()
+        setupEmailAlertListeners()
         observeSettings()
+        observeEmailAlerts()
     }
 
     private fun setupViewModeSpinner() {
@@ -246,6 +249,83 @@ class SettingsFragment : Fragment() {
                 binding.sliderMatrixGamma.value = snapped
                 binding.tvMatrixGamma.text = "${(snapped * 100).toInt()}%"
                 viewModel.setMatrixGamma(snapped)
+            }
+        }
+    }
+
+    private fun setupEmailAlertListeners() {
+        binding.switchEmail.setOnCheckedChangeListener { _, isChecked ->
+            viewModel.setEmailEnabled(isChecked)
+        }
+
+        // Text fields commit on focus-loss so each keystroke isn't persisted.
+        binding.etRecipient.onFocusChangeListener = object : View.OnFocusChangeListener {
+            override fun onFocusChange(view: View, hasFocus: Boolean) {
+                if (!hasFocus) viewModel.setEmailRecipient(binding.etRecipient.text?.toString() ?: "")
+            }
+        }
+        binding.etSenderEmail.onFocusChangeListener = object : View.OnFocusChangeListener {
+            override fun onFocusChange(view: View, hasFocus: Boolean) {
+                if (!hasFocus) viewModel.setEmailSender(binding.etSenderEmail.text?.toString() ?: "")
+            }
+        }
+        binding.etApiKey.onFocusChangeListener = object : View.OnFocusChangeListener {
+            override fun onFocusChange(view: View, hasFocus: Boolean) {
+                if (!hasFocus) {
+                    val value = binding.etApiKey.text?.toString() ?: ""
+                    if (value.isNotBlank()) viewModel.setEmailApiKey(value)
+                    // Never leave the plaintext in the field after committing.
+                    binding.etApiKey.setText("")
+                }
+            }
+        }
+
+        binding.sliderCooldown.addOnChangeListener { _, value, fromUser ->
+            if (fromUser) {
+                val secs = value.toInt().coerceIn(30, 120)
+                binding.sliderCooldown.value = secs.toFloat()
+                binding.tvCooldownValue.text = getString(R.string.email_cooldown_value, secs)
+                viewModel.setEmailCooldownSeconds(secs)
+            }
+        }
+
+        binding.btnTestEmail.setOnClickListener {
+            viewModel.sendTestAlertEmail()
+        }
+    }
+
+    private fun observeEmailAlerts() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    viewModel.emailSettings.collect { s ->
+                        binding.switchEmail.isChecked = s.enabled
+                        val secs = (s.cooldownMs / 1000).toInt().coerceIn(30, 120)
+                        binding.sliderCooldown.value = secs.toFloat()
+                        binding.tvCooldownValue.text = getString(R.string.email_cooldown_value, secs)
+                        if (!binding.etRecipient.isFocused) binding.etRecipient.setText(s.recipient)
+                        if (!binding.etSenderEmail.isFocused) binding.etSenderEmail.setText(s.senderEmail)
+                    }
+                }
+                launch {
+                    viewModel.emailApiKeyPresent.collect { present ->
+                        binding.tvApiKeyStatus.text = getString(
+                            if (present) R.string.email_api_key_saved else R.string.email_api_key_missing
+                        )
+                    }
+                }
+                launch {
+                    combine(
+                        viewModel.emailTestRunning,
+                        viewModel.emailTestFailure,
+                    ) { running, detail ->
+                        running to detail
+                    }.collect { (running, detail) ->
+                        binding.btnTestEmail.isEnabled = !running
+                        binding.tvTestEmailStatus.text =
+                            if (running) getString(R.string.email_test_sending) else detail.orEmpty()
+                    }
+                }
             }
         }
     }

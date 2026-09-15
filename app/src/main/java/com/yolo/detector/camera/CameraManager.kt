@@ -2,11 +2,14 @@ package com.yolo.detector.camera
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.SystemClock
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import com.yolo.detector.alerts.AlertTrigger
+import com.yolo.detector.alerts.DetectionThrottler
 import com.yolo.detector.data.Detection
 import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.InferenceSettings
@@ -60,6 +63,22 @@ class CameraManager(
 
     private val _cameraError = MutableStateFlow<String?>(null)
     val cameraError: StateFlow<String?> = _cameraError
+
+    // ── Email-alert throttling ───────────────────────────────────────────────
+    // Global alert state machine, fed once per inference frame (see processFrame).
+    private val alertThrottler = DetectionThrottler()
+
+    /** Master switch for alert dispatch. Guarded by the analysis thread / [updateAlertSettings]. */
+    @Volatile var alertEnabled: Boolean = false
+
+    /** Empty = alert on any detection; otherwise restrict to these COCO class IDs. */
+    @Volatile var alertTriggerClassIds: Set<Int> = emptySet()
+
+    /**
+     * Called on the analysis thread when a confirmed detection fires; ownership of the
+     * passed [Bitmap] transfers to the receiver (it must be recycled there).
+     */
+    @Volatile var onAlert: ((AlertTrigger, Bitmap) -> Unit)? = null
 
     private val isAnalyzing = AtomicBoolean(false)
     private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
@@ -210,10 +229,24 @@ class CameraManager(
                     val rawDetections = detector.detect(bitmap)
                     val inferenceEnd = System.currentTimeMillis()
 
-                    val tracked = tracker.update(rawDetections, inferenceEnd)
-                    val toEmit = if (tracked.isNotEmpty()) tracked else rawDetections
-                    _inferenceTimeMs.value = inferenceEnd - inferenceStart
-                    _detectionFlow.value = toEmit
+                val tracked = tracker.update(rawDetections, inferenceEnd)
+                val toEmit = if (tracked.isNotEmpty()) tracked else rawDetections
+                _inferenceTimeMs.value = inferenceEnd - inferenceStart
+                _detectionFlow.value = toEmit
+
+                // Email-alert throttling: runs on this exact inference frame, converting
+                // it to JPEG downstream. Only the confirmed frame is ever copied, and
+                // the copy is handed to [onAlert] before `bitmap` is recycled below.
+                if (alertEnabled) {
+                    val candidates = if (alertTriggerClassIds.isEmpty()) toEmit
+                    else toEmit.filter { it.classId in alertTriggerClassIds }
+                    // Monotonic clock: wall-clock can jump (NTP/user changes) and would
+                    // expire COOLDOWN early, causing exactly this kind of duplicate.
+                    val trigger = alertThrottler.onDetections(candidates, SystemClock.elapsedRealtime())
+                    if (trigger != null) {
+                        val alertFrame = bitmap.copy(Bitmap.Config.ARGB_8888, true)
+                        onAlert?.invoke(trigger, alertFrame)
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.e("CameraManager", "Analysis error", e)
@@ -222,6 +255,19 @@ class CameraManager(
                 isAnalyzing.set(false)
             }
         }
+    }
+
+    /**
+     * Updates the email-alert throttling config. Safe to call from any thread.
+     *
+     * @param triggerClassIds empty set = alert on any detection; otherwise only when a
+     *        detected class is in this set.
+     */
+    fun updateAlertSettings(enabled: Boolean, cooldownMs: Long, triggerClassIds: Set<Int>) {
+        alertEnabled = enabled
+        alertThrottler.cooldownMs = cooldownMs
+        alertTriggerClassIds = triggerClassIds
+        if (!enabled) alertThrottler.reset()
     }
 
     /** Shuts down the background executor and cancels the coroutine scope. */
@@ -235,6 +281,7 @@ class CameraManager(
             analysisExecutor.awaitTermination(500, java.util.concurrent.TimeUnit.MILLISECONDS)
         } catch (_: InterruptedException) {}
         tracker.reset()
+        alertThrottler.reset()
         _cameraError.value = null
         _detectionFlow.value = emptyList()
         _frameFlow.value = null
