@@ -92,6 +92,19 @@ class CameraManager(
     private val frameIntervalMs: Long get() = 1000L / settings.inferenceRateFps.coerceAtLeast(1)
     private var lastInferenceMs: Long = 0L
 
+    companion object {
+        /**
+         * View-mode refresh cadence, decoupled from the inference throttle.
+         * Filtered view modes (Matrix/Heatmap/Edge, and OBJECTS_ONLY masking)
+         * re-render at this independent cap regardless of the "Inference FPS"
+         * slider, so they stay smooth even when detection is slowed down for
+         * battery/perf.
+         */
+        const val VIEW_FPS = 15
+        const val VIEW_INTERVAL_MS: Long = 1000L / VIEW_FPS
+    }
+    private var lastViewEmitMs: Long = 0L
+
     /**
      * Binds the camera to [lifecycleOwner] and connects the preview to [previewView].
      *
@@ -164,19 +177,32 @@ class CameraManager(
 
     private fun processFrame(imageProxy: ImageProxy) {
         val now = System.currentTimeMillis()
-        if (now - lastInferenceMs < frameIntervalMs) {
+
+        // Filtered view modes render from this frame feed. Give them their own
+        // refresh cadence (VIEW_FPS) decoupled from the inference throttle so a
+        // low "Inference FPS" setting doesn't make the Matrix/Heatmap/Edge views
+        // stutter. NORMAL mode without masking uses the smooth PreviewView.
+        val needsFrame = settings.viewMode != ViewMode.NORMAL ||
+                settings.detectionView == DetectionView.OBJECTS_ONLY
+        val viewDue = needsFrame && now - lastViewEmitMs >= VIEW_INTERVAL_MS
+        val inferenceDue = now - lastInferenceMs >= frameIntervalMs
+
+        if (!viewDue && !inferenceDue) {
             imageProxy.close()
             return
         }
 
-        // If an inference pass is currently running, drop the frame to prevent queue buildup and concurrency issues
+        // If a pass is currently running, drop the frame to prevent queue buildup
+        // and concurrency issues (CameraX keeps only the latest frame anyway).
         if (!isAnalyzing.compareAndSet(false, true)) {
             imageProxy.close()
             return
         }
-        lastInferenceMs = now
+        if (inferenceDue) lastInferenceMs = now
+        if (viewDue) lastViewEmitMs = now
 
-        // Convert to bitmap on the analysis executor thread
+        // Convert to bitmap on the analysis executor thread (shared by both the
+        // view emit and the inference pass so a frame is never converted twice).
         val bitmap = try {
             imageProxy.toRgbBitmap()
         } catch (e: Exception) {
@@ -185,26 +211,23 @@ class CameraManager(
             isAnalyzing.set(false)
             return
         }
-        imageProxy.close()  // Must close before launching inference
+        imageProxy.close()  // Must close before launching work
 
         scope.launch {
             try {
-                // For filtered view modes (or OBJECTS_ONLY masking), hand a copy
-                // of the frame to the UI for display. Ownership of the copy moves
-                // to the consumer; the inference bitmap is still recycled below.
-                // NORMAL mode without masking keeps the smooth PreviewView instead.
-                val needsFrame = settings.viewMode != ViewMode.NORMAL ||
-                        settings.detectionView == DetectionView.OBJECTS_ONLY
-                if (needsFrame) {
+                if (viewDue) {
+                    // Hand a copy to the UI for display. Ownership of the copy
+                    // moves to the consumer; the bitmap below is still recycled.
                     android.util.Log.i("ViewMode", "emit frame ${settings.viewMode}/${settings.detectionView}")
                     _frameFlow.value = bitmap.copy(Bitmap.Config.ARGB_8888, true)
-                } else if (_frameFlow.value != null) {
+                } else if (!needsFrame && _frameFlow.value != null) {
                     _frameFlow.value = null
                 }
 
-                val inferenceStart = System.currentTimeMillis()
-                val rawDetections = detector.detect(bitmap)
-                val inferenceEnd = System.currentTimeMillis()
+                if (inferenceDue) {
+                    val inferenceStart = System.currentTimeMillis()
+                    val rawDetections = detector.detect(bitmap)
+                    val inferenceEnd = System.currentTimeMillis()
 
                 val tracked = tracker.update(rawDetections, inferenceEnd)
                 val toEmit = if (tracked.isNotEmpty()) tracked else rawDetections
@@ -226,7 +249,7 @@ class CameraManager(
                     }
                 }
             } catch (e: Exception) {
-                android.util.Log.e("CameraManager", "Inference error", e)
+                android.util.Log.e("CameraManager", "Analysis error", e)
             } finally {
                 bitmap.recycle()
                 isAnalyzing.set(false)
