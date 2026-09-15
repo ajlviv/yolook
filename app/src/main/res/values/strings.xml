@@ -61,4 +61,36 @@
     <string name="snapshot_failed">Failed to save snapshot</string>
     <string name="model_missing">Missing yolov8m.tflite in app assets. Export the model and copy it to app/src/main/assets, then rebuild. See that folder\'s README.</string>
     <string name="model_load_failed">Failed to load the detector model: %1$s</string>
+
+    <!-- Email alerts -->
+    <string name="email_alerts_header">Email alerts</string>
+    <string name="email_enable">Send email when objects are detected</string>
+    <string name="email_recipient_hint">Recipient email address</string>
+    <string name="email_sender_hint">Sender email (must be verified; blank = recipient)</string>
+    <string name="email_api_key_hint">Brevo API key</string>
+    <string name="email_api_key_missing">No API key saved yet</string>
+    <string name="email_api_key_saved">API key saved (plaintext never re-shown). Paste above to replace.</string>
+    <string name="email_cooldown">Alert cooldown</string>
+    <string name="email_cooldown_value">%1$d s</string>
+    <string name="email_cooldown_value_default">60 s</string>
+    <string name="email_test_send">Send test email</string>
+    <string name="email_test_sending">Sending…</string>
+    <string name="email_test_sent">Test email sent</string>
+    <string name="email_test_failed">Test email failed — check settings and network</string>
+    <string name="email_test_config_missing">Cannot send: %1$s.</string>
+    <string name="email_test_missing_alerts_disabled">email alerts are disabled</string>
+    <string name="email_test_missing_api_key">API key is missing</string>
+    <string name="email_test_missing_recipient">recipient is missing</string>
+    <string name="email_test_network_error">Network call failed (%1$s).</string>
+    <string name="email_test_network_dns">DNS lookup/network route</string>
+    <string name="email_test_network_timeout">network timeout</string>
+    <string name="email_test_network_unreachable">server unreachable</string>
+    <string name="email_test_network_tls">TLS/certificate problem</string>
+    <string name="email_test_provider_request">HTTP %1$s: check the verified sender and recipient.</string>
+    <string name="email_test_provider_auth">HTTP %1$s: check the API key and verified sender.</string>
+    <string name="email_test_provider_rate_limited">HTTP %1$s: provider rate limit; wait and retry.</string>
+    <string name="email_test_provider_server">HTTP %1$s: provider or server error.</string>
+    <string name="email_test_provider_rejected">HTTP %1$s: provider rejected the request.</string>
+    <string name="email_alert_sent">Alert email sent</string>
+    <string name="email_alert_failed">Alert email failed — check settings and network</string>
 </resources>

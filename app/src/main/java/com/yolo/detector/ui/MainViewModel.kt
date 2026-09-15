@@ -10,6 +10,8 @@ import android.widget.Toast
 import androidx.camera.view.PreviewView
 import androidx.lifecycle.*
 import com.yolo.detector.R
+import com.yolo.detector.alerts.AlertTrigger
+import com.yolo.detector.alerts.EmailAlertService
 import com.yolo.detector.camera.CameraManager
 import com.yolo.detector.data.*
 import com.yolo.detector.inference.ModelAssets
@@ -40,6 +42,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private val settingsRepo = SettingsRepository(application)
+
+    /** Persists email-alert config; the API key is stored encrypted (AndroidX Security). */
+    private val emailRepo = EmailSettingsRepository(application)
 
     // ── Pipeline components ────────────────────────────────────────────────────
 
@@ -79,6 +84,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val cameraError: StateFlow<String?> = _cameraError.asStateFlow()
 
     val settingsFlow: Flow<InferenceSettings> = settingsRepo.settingsFlow
+
+    // ── Email-alert state ─────────────────────────────────────────────────────
+
+    /** Latest persisted email-alert settings (for the Settings UI). */
+    private val _emailSettings = MutableStateFlow(EmailSettings())
+    val emailSettings: StateFlow<EmailSettings> = _emailSettings.asStateFlow()
+
+    /** True when an encrypted API key is currently stored. */
+    private val _emailApiKeyPresent = MutableStateFlow(false)
+    val emailApiKeyPresent: StateFlow<Boolean> = _emailApiKeyPresent.asStateFlow()
+
+    /** Snapshot read by the alert dispatcher off the camera thread. */
+    @Volatile private var cachedEmailSettings: EmailSettings = EmailSettings()
+
+    /**
+     * Last actually-dispatched alert instant on the throttler's clock
+     * ([SystemClock.elapsedRealtime]), or 0 when none yet. Lives here — not in
+     * [DetectionThrottler] — so it survives CameraManager recreation while staying
+     * ViewModel-scoped (a fresh process starts at zero, like the pipeline).
+     */
+    @Volatile private var lastAlertStartedAtMs: Long = 0L
 
     /** Latest settings snapshot for synchronous reads (updated by the collector above). */
     val currentSettingsSnapshot: InferenceSettings get() = currentSettings
@@ -122,6 +148,97 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     launch { mgr.cameraError.collect { msg -> _cameraError.value = msg } }
                 }
             }
+        }
+
+        // Email-alert config: cache it for the alert dispatcher and push the
+        // cooldown/class-filter into the active CameraManager.
+        viewModelScope.launch {
+            emailRepo.settingsFlow.collect { s ->
+                cachedEmailSettings = s
+                _emailSettings.value = s
+                applyAlertConfig()
+            }
+        }
+        refreshEmailApiKeyStatus()
+    }
+
+    /** Pushes the latest email-alert config into the active camera manager (if any). */
+    private fun applyAlertConfig() {
+        cameraManager?.updateAlertSettings(
+            enabled = cachedEmailSettings.enabled,
+            cooldownMs = cachedEmailSettings.cooldownMs,
+            triggerClassIds = cachedEmailSettings.triggerClassIds,
+        )
+    }
+
+    /**
+     * Builds a [CameraManager] wired to dispatch confirmed detections to the email
+     * alert pipeline. Callers then assign it to [cameraManager] and bind the camera.
+     */
+    private fun configuredManager(settings: InferenceSettings): CameraManager {
+        val mgr = CameraManager(getApplication(), settings, detector!!, tracker)
+        mgr.onAlert = ::dispatchAlert
+        mgr.updateAlertSettings(
+            enabled = cachedEmailSettings.enabled,
+            cooldownMs = cachedEmailSettings.cooldownMs,
+            triggerClassIds = cachedEmailSettings.triggerClassIds,
+        )
+        return mgr
+    }
+
+    /**
+     * Called on the analysis thread when the throttler confirms a detection. Hands the
+     * frame to an IO coroutine that compresses it to JPEG and emails it — never blocks
+     * the camera/YOLO loop. Always recycles [frame].
+     */
+    private fun dispatchAlert(trigger: AlertTrigger, frame: Bitmap) {
+        // Double-check the cooldown at dispatch time: the in-manager throttler resets
+        // whenever the camera pipeline is recreated, so without this guard a settings
+        // change or rebind could re-fire an alert well inside the "don't spam me"
+        // window. Drops (recycling [frame]) instead of queueing — matching the
+        // non-blocking contract of this path.
+        val now = android.os.SystemClock.elapsedRealtime()
+        val last = lastAlertStartedAtMs
+        if (last != 0L && now - last < cachedEmailSettings.cooldownMs.coerceAtLeast(0L)) {
+            frame.recycle()
+            return
+        }
+        lastAlertStartedAtMs = now
+        viewModelScope.launch(Dispatchers.IO) {
+            val sent = try {
+                val settings = cachedEmailSettings
+                val key = emailRepo.apiKey()
+                // Fail-fast (and stay silent) when not properly configured.
+                if (!settings.enabled || key.isBlank() || settings.recipient.isBlank()) {
+                    return@launch
+                }
+                val labels = trigger.detectedClassIds
+                    .map { labelFor(it) }
+                    .distinct()
+                    .joinToString(", ")
+                val jpeg = EmailAlertService.frameToJpeg(frame)
+                EmailAlertService.send(settings, key, jpeg, labels, System.currentTimeMillis())
+                    .isSuccess
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "Alert dispatch failed", e)
+                false
+            } finally {
+                frame.recycle()
+            }
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    getApplication(),
+                    if (sent) R.string.email_alert_sent else R.string.email_alert_failed,
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+    }
+
+    /** Refreshes [emailApiKeyPresent] from the encrypted store. */
+    fun refreshEmailApiKeyStatus() {
+        viewModelScope.launch {
+            _emailApiKeyPresent.value = emailRepo.apiKey().isNotBlank()
         }
     }
 
@@ -212,7 +329,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (hadManager && owner != null && view != null &&
             owner.lifecycle.currentState.isAtLeast(Lifecycle.State.INITIALIZED)
         ) {
-            val mgr = CameraManager(getApplication(), settings, detector!!, tracker)
+            val mgr = configuredManager(settings)
             cameraManager = mgr
             mgr.bindCamera(owner, view)
         }
@@ -255,7 +372,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (!loadDetector(currentSettings)) return
             detector!!
         }
-        val mgr = CameraManager(getApplication(), currentSettings, d, tracker)
+        val mgr = configuredManager(currentSettings)
         cameraManager = mgr
 
         mgr.bindCamera(lifecycleOwner, previewView)
@@ -322,6 +439,157 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setMatrixDetail(v: Int)       = viewModelScope.launch { settingsRepo.setMatrixDetail(v) }
     fun setMatrixGamma(v: Float)      = viewModelScope.launch { settingsRepo.setMatrixGamma(v) }
     fun resetSettings()                  = viewModelScope.launch { settingsRepo.resetToDefaults() }
+
+    // ── Email-alert settings delegates ────────────────────────────────────────
+
+    fun setEmailEnabled(v: Boolean)        = viewModelScope.launch { emailRepo.setEnabled(v) }
+    fun setEmailRecipient(v: String)       = viewModelScope.launch { emailRepo.setRecipient(v) }
+    fun setEmailSender(v: String)          = viewModelScope.launch { emailRepo.setSenderEmail(v) }
+    fun setEmailCooldownSeconds(v: Int)    = viewModelScope.launch { emailRepo.setCooldownMs(v * 1000L) }
+    fun setEmailTriggerClassIds(ids: Set<Int>) = viewModelScope.launch { emailRepo.setTriggerClassIds(ids) }
+
+    /** Latest detailed verdict when [sendTestAlertEmail] cannot complete the send. */
+    private val _emailTestFailure = MutableStateFlow<String?>(null)
+    val emailTestFailure: StateFlow<String?> = _emailTestFailure.asStateFlow()
+
+    /** True only while [sendTestAlertEmail] has a network send in flight. */
+    private val _emailTestRunning = MutableStateFlow(false)
+    val emailTestRunning: StateFlow<Boolean> = _emailTestRunning.asStateFlow()
+
+    /** Persists the (encrypted) API key, then refreshes its presence flag. */
+    fun setEmailApiKey(v: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            emailRepo.setApiKey(v)
+            refreshEmailApiKeyStatus()
+        }
+    }
+
+    /**
+     * Sends a placeholder "test" email. This path intentionally ignores the live
+     * email-alerts master switch, and only requires the API key and recipient.
+     * It still mirrors [saveSnapshot]'s IO + toast pattern so a slow provider
+     * call never touches the camera loop.
+     */
+    fun sendTestAlertEmail() {
+        if (_emailTestRunning.value) return
+        _emailTestFailure.value = null
+        _emailTestRunning.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            // Read the fresh persisted value, not the cached snapshot: the master
+            // switch write may still be propagating when the user taps "Send test".
+            val settings = emailRepo.settingsFlow.first().also { cachedEmailSettings = it }
+            val key = emailRepo.apiKey()
+            val app = getApplication<Application>()
+            val missing = listOfNotNull(
+                app.getString(R.string.email_test_missing_api_key).takeIf { key.isBlank() },
+                app.getString(R.string.email_test_missing_recipient).takeIf { settings.recipient.isBlank() },
+            )
+            val ok = if (missing.isNotEmpty()) {
+                _emailTestFailure.value = app.getString(R.string.email_test_config_missing, missing.joinToString(", "))
+                _emailTestRunning.value = false
+                false
+            } else {
+                val sent = sendTestPlaceholder(settings, key)
+                _emailTestRunning.value = false
+                sent
+            }
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    getApplication(),
+                    if (ok) R.string.email_test_sent else R.string.email_test_failed,
+                    Toast.LENGTH_SHORT,
+                ).show()
+            }
+        }
+    }
+
+    private suspend fun sendTestPlaceholder(settings: EmailSettings, key: String): Boolean {
+        val placeholder = Bitmap.createBitmap(320, 240, Bitmap.Config.ARGB_8888).let { bmp ->
+            val c = android.graphics.Canvas(bmp)
+            c.drawColor(android.graphics.Color.rgb(0, 230, 118))
+            val paint = android.graphics.Paint().apply {
+                isAntiAlias = true
+                color = android.graphics.Color.WHITE
+                style = android.graphics.Paint.Style.STROKE
+                strokeWidth = 6f
+            }
+            c.drawRect(40f, 40f, 280f, 200f, paint)
+            bmp
+        }
+        try {
+            val jpeg = EmailAlertService.frameToJpeg(placeholder)
+            val outcome = EmailAlertService.sendDetailed(settings, key, jpeg, "test", System.currentTimeMillis())
+            return when (outcome) {
+                EmailAlertService.SendOutcome.Sent -> true
+                is EmailAlertService.SendOutcome.ProviderRejected -> {
+                    _emailTestFailure.value = providerRejectedMessage(outcome.httpCode)
+                    android.util.Log.w("MainViewModel", "Test email rejected HTTP ${outcome.httpCode}: ${outcome.body}")
+                    false
+                }
+                is EmailAlertService.SendOutcome.NetworkError -> {
+                    _emailTestFailure.value = networkErrorMessage(outcome.cause)
+                    android.util.Log.w("MainViewModel", "Test email failed", outcome.cause)
+                    false
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MainViewModel", "Test email failed", e)
+            _emailTestFailure.value = networkErrorMessage(e)
+            return false
+        } finally {
+            placeholder.recycle()
+        }
+    }
+
+    private fun networkErrorMessage(cause: Throwable): String {
+        val app = getApplication<Application>()
+        fun walk(t: Throwable?): Sequence<Throwable> = generateSequence(t) { it.cause }
+        if (walk(cause).any {
+                it is java.net.UnknownHostException ||
+                    it is java.net.NoRouteToHostException ||
+                    it is java.io.InterruptedIOException
+            }
+        ) {
+            return app.getString(R.string.email_test_network_error, app.getString(R.string.email_test_network_dns))
+        }
+        if (walk(cause).any { it is java.net.SocketTimeoutException || it is java.util.concurrent.TimeoutException }) {
+            return app.getString(R.string.email_test_network_error, app.getString(R.string.email_test_network_timeout))
+        }
+        if (walk(cause).any {
+                it is java.net.ConnectException ||
+                    it is java.net.SocketException ||
+                    it is javax.net.ssl.SSLException ||
+                    it is java.security.cert.CertificateException
+            }
+        ) {
+            val detail = if (walk(cause).any {
+                    it is javax.net.ssl.SSLException || it is java.security.cert.CertificateException
+                }
+            ) {
+                app.getString(R.string.email_test_network_tls)
+            } else {
+                app.getString(R.string.email_test_network_unreachable)
+            }
+            return app.getString(R.string.email_test_network_error, detail)
+        }
+        val short = cause.message?.take(140) ?: cause.javaClass.simpleName
+        return app.getString(R.string.email_test_network_error, short)
+    }
+
+    private fun providerRejectedMessage(httpCode: Int): String {
+        val app = getApplication<Application>()
+        val res = when (httpCode) {
+            400 -> R.string.email_test_provider_request
+            401 -> R.string.email_test_provider_auth
+            402 -> R.string.email_test_provider_auth
+            403 -> R.string.email_test_provider_auth
+            404 -> R.string.email_test_provider_request
+            429 -> R.string.email_test_provider_rate_limited
+            in 500..599 -> R.string.email_test_provider_server
+            else -> R.string.email_test_provider_rejected
+        }
+        return app.getString(res, httpCode)
+    }
 
     // ── Lifecycle ──────────────────────────────────────────────────────────────
 

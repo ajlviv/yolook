@@ -71,6 +71,8 @@ dependencies {
     implementation(libs.navigation.ui.ktx)
     implementation(libs.material)
     implementation(libs.constraintlayout)
+    implementation(libs.okhttp)
+    implementation(libs.androidx.security.crypto)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.ext.junit)

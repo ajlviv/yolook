@@ -386,6 +386,134 @@
             android:layout_marginTop="8dp"
             android:orientation="vertical" />
 
+        <!-- Email Alerts -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/email_alerts_header"
+            android:textColor="#FFFFFF"
+            android:textStyle="bold" />
+
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchEmail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/email_enable"
+            android:textColor="#FFFFFF"
+            app:thumbTint="#00E676"
+            app:trackTint="#3300E676" />
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tilRecipient"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/email_recipient_hint"
+            app:boxBackgroundColor="#2C2C2C"
+            app:hintTextColor="#AAAAAA"
+            app:startIconDrawable="@drawable/ic_email">
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etRecipient"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textEmailAddress"
+                android:maxLines="1"
+                android:textColor="#FFFFFF" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tilSender"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/email_sender_hint"
+            app:boxBackgroundColor="#2C2C2C"
+            app:hintTextColor="#AAAAAA"
+            app:startIconDrawable="@drawable/ic_send">
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etSenderEmail"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textEmailAddress"
+                android:maxLines="1"
+                android:textColor="#FFFFFF" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tilApiKey"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:hint="@string/email_api_key_hint"
+            app:boxBackgroundColor="#2C2C2C"
+            app:endIconMode="password_toggle"
+            app:hintTextColor="#AAAAAA"
+            app:startIconDrawable="@drawable/ic_key">
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/etApiKey"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textPassword"
+                android:maxLines="1"
+                android:textColor="#FFFFFF" />
+        </com.google.android.material.textfield.TextInputLayout>
+
+        <TextView
+            android:id="@+id/tvApiKeyStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="@string/email_api_key_missing"
+            android:textColor="#00E676"
+            android:textSize="12sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/email_cooldown"
+                android:textColor="#FFFFFF" />
+            <TextView
+                android:id="@+id/tvCooldownValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/email_cooldown_value_default"
+                android:textColor="#00E676" />
+        </LinearLayout>
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderCooldown"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:stepSize="5"
+            android:value="60"
+            android:valueFrom="30"
+            android:valueTo="120"
+            app:thumbColor="#00E676"
+            app:trackColorActive="#00E676" />
+
+        <Button
+            android:id="@+id/btnTestEmail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="@string/email_test_send"
+            android:textSize="13sp"
+            app:backgroundTint="#2C2C2C" />
+        <TextView
+            android:id="@+id/tvTestEmailStatus"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="#AAAAAA"
+            android:textSize="12sp" />
+
         <Button
             android:id="@+id/btnResetDefaults"
             android:layout_width="match_parent"
