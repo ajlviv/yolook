@@ -27,8 +27,8 @@ import java.io.FileNotFoundException
  *
  * Exposes three StateFlows for UI consumption:
  * - [detectionFlow] — current frame's tracked detections.
- * - [historyFlow]  — in-memory summary of the last [MAX_HISTORY] seen objects,
- *   grouped by track so each object is shown once.
+ * - [historyFlow]  — in-memory summary of the last [MAX_HISTORY] events: seen
+ *   objects grouped by track plus dispatched alert notifications.
  * - [statsFlow]    — live performance metrics (FPS, latency, object count).
  *
  * When [InferenceSettings] change, the detector is torn down and recreated so the
@@ -71,8 +71,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Per-track aggregate of every object seen so far; key is the [HistoryEntry] track identity. */
     private val historyByTrack = mutableMapOf<Int, HistoryEntry>()
-    private val _historyFlow = MutableStateFlow<List<HistoryEntry>>(emptyList())
-    val historyFlow: StateFlow<List<HistoryEntry>> = _historyFlow.asStateFlow()
+
+    /** Dispatched alert events, newest last. Capped at [MAX_HISTORY] entries. */
+    private val alertLog = mutableListOf<HistoryItem.Alert>()
+
+    /** Unified, newest-first history stream (objects + alerts). All mutators run on the main thread. */
+    private val _historyFlow = MutableStateFlow<List<HistoryItem>>(emptyList())
+    val historyFlow: StateFlow<List<HistoryItem>> = _historyFlow.asStateFlow()
 
     private val _statsFlow = MutableStateFlow(InferenceStats())
     val statsFlow: StateFlow<InferenceStats> = _statsFlow.asStateFlow()
@@ -204,33 +209,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         lastAlertStartedAtMs = now
+        val dispatchedAtMs = System.currentTimeMillis()
+        // Record the notification immediately (on the main thread) so the history
+        // entry exists the moment the alert is confirmed — independent of the email
+        // send, which can take many seconds (or fail) and must not delay the record.
+        val alert = HistoryItem.Alert(dispatchedAtMs, trigger.detectedClassIds, emailSent = false)
+        viewModelScope.launch { recordAlert(alert) }
+
         viewModelScope.launch(Dispatchers.IO) {
-            val sent = try {
+            var emailAttempted = false
+            var emailSent = false
+            try {
                 val settings = cachedEmailSettings
                 val key = emailRepo.apiKey()
-                // Fail-fast (and stay silent) when not properly configured.
-                if (!settings.enabled || key.isBlank() || settings.recipient.isBlank()) {
-                    return@launch
+                // Only send (and surface toast results) when properly configured.
+                if (settings.enabled && key.isNotBlank() && settings.recipient.isNotBlank()) {
+                    emailAttempted = true
+                    val labels = trigger.detectedClassIds
+                        .map { labelFor(it) }
+                        .distinct()
+                        .joinToString(", ")
+                    val jpeg = EmailAlertService.frameToJpeg(frame)
+                    emailSent = EmailAlertService
+                        .send(settings, key, jpeg, labels, dispatchedAtMs)
+                        .isSuccess
                 }
-                val labels = trigger.detectedClassIds
-                    .map { labelFor(it) }
-                    .distinct()
-                    .joinToString(", ")
-                val jpeg = EmailAlertService.frameToJpeg(frame)
-                EmailAlertService.send(settings, key, jpeg, labels, System.currentTimeMillis())
-                    .isSuccess
             } catch (e: Exception) {
                 android.util.Log.e("MainViewModel", "Alert dispatch failed", e)
-                false
             } finally {
                 frame.recycle()
             }
             withContext(Dispatchers.Main) {
-                Toast.makeText(
-                    getApplication(),
-                    if (sent) R.string.email_alert_sent else R.string.email_alert_failed,
-                    Toast.LENGTH_SHORT,
-                ).show()
+                alert.emailSent = emailSent
+                rebuildHistory()
+                if (emailAttempted) {
+                    Toast.makeText(
+                        getApplication(),
+                        if (emailSent) R.string.email_alert_sent else R.string.email_alert_failed,
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
             }
         }
     }
@@ -249,7 +267,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 upsertHistory(detection)
             }
             trimHistory()
-            _historyFlow.value = historyByTrack.values.sortedByDescending { it.lastSeenMs }
+            rebuildHistory()
 
             val now = System.currentTimeMillis()
             val elapsed = (now - lastFrameMs).coerceAtLeast(1L)
@@ -304,6 +322,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .sortedBy { it.value.lastSeenMs }
             .take(historyByTrack.size - MAX_HISTORY)
             .forEach { historyByTrack.remove(it.key) }
+    }
+
+    /**
+     * Merges object entries and alert events into the newest-first [historyFlow],
+     * capped at [MAX_HISTORY] rows. Must run on the main thread (alongside
+     * [collectDetections]).
+     */
+    private fun rebuildHistory() {
+        _historyFlow.value = mergeHistoryItems(historyByTrack.values, alertLog, MAX_HISTORY)
+    }
+
+    /**
+     * Appends a dispatched alert to the history. Must run on the main thread.
+     *
+     * The entry carries its newest-first timestamp; [HistoryItem.Alert.emailSent]
+     * is updated in place once the email send settles (see [dispatchAlert]).
+     */
+    private fun recordAlert(alert: HistoryItem.Alert) {
+        alertLog.add(alert)
+        if (alertLog.size > MAX_HISTORY) {
+            alertLog.subList(0, alertLog.size - MAX_HISTORY).clear()
+        }
+        rebuildHistory()
     }
 
     private fun recreateDetector(settings: InferenceSettings) {
@@ -380,9 +421,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Actions ────────────────────────────────────────────────────────────────
 
-    /** Clears the in-memory detection history. */
+    /** Clears the in-memory detection/alert history. */
     fun clearHistory() {
         historyByTrack.clear()
+        alertLog.clear()
         _historyFlow.value = emptyList()
     }
 
