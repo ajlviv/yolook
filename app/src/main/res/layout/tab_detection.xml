@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:clipToPadding="false"
+    android:fillViewport="true">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="16dp">
+
+        <!-- Confidence Threshold -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/settings_conf_threshold"
+                android:textColor="#FFFFFF" />
+            <TextView
+                android:id="@+id/tvConfValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="40%"
+                android:textColor="#00E676" />
+        </LinearLayout>
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderConfidence"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="0.1"
+            android:valueTo="0.9"
+            android:stepSize="0.05"
+            app:thumbColor="#00E676"
+            app:trackColorActive="#00E676" />
+
+        <!-- IoU Threshold -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/settings_iou_threshold"
+                android:textColor="#FFFFFF" />
+            <TextView
+                android:id="@+id/tvIouValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="45%"
+                android:textColor="#00E676" />
+        </LinearLayout>
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderIou"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="0.1"
+            android:valueTo="0.9"
+            android:stepSize="0.05"
+            app:thumbColor="#00E676"
+            app:trackColorActive="#00E676" />
+
+        <!-- Max Objects -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/settings_max_objects"
+                android:textColor="#FFFFFF" />
+            <TextView
+                android:id="@+id/tvMaxObjectsValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="50"
+                android:textColor="#00E676" />
+        </LinearLayout>
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderMaxObjects"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="1"
+            android:valueTo="100"
+            android:stepSize="1"
+            app:thumbColor="#00E676"
+            app:trackColorActive="#00E676" />
+
+        <!-- Inference FPS Cap -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/settings_inference_fps"
+                android:textColor="#FFFFFF" />
+            <TextView
+                android:id="@+id/tvFpsValue"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="10 FPS"
+                android:textColor="#00E676" />
+        </LinearLayout>
+        <com.google.android.material.slider.Slider
+            android:id="@+id/sliderFps"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:valueFrom="1"
+            android:valueTo="30"
+            android:stepSize="1"
+            app:thumbColor="#00E676"
+            app:trackColorActive="#00E676" />
+
+        <!-- GPU Delegate Switch -->
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchGpu"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_gpu_delegate"
+            android:textColor="#FFFFFF"
+            app:thumbTint="#00E676"
+            app:trackTint="#3300E676" />
+
+    </LinearLayout>
+
+</ScrollView>

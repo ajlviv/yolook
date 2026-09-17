@@ -70,6 +70,7 @@ dependencies {
     implementation(libs.navigation.fragment.ktx)
     implementation(libs.navigation.ui.ktx)
     implementation(libs.material)
+    implementation(libs.viewpager2)
     implementation(libs.constraintlayout)
     implementation(libs.okhttp)
     implementation(libs.androidx.security.crypto)

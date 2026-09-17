@@ -8,32 +8,44 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.LinearLayout
+import android.widget.Spinner
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
-import com.yolo.detector.R
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.tabs.TabLayoutMediator
+import com.yolo.detector.R
 import com.yolo.detector.data.COCO_LABELS
 import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.VEHICLE_CLASS_IDS
 import com.yolo.detector.data.ViewMode
-import com.yolo.detector.databinding.FragmentSettingsBinding
+import com.yolo.detector.databinding.FragmentSettingsTabsBinding
 import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.util.snapToStep
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 
 /**
- * Settings fragment: allows runtime tuning of detection thresholds, FPS cap, GPU acceleration, and class filters.
+ * Settings fragment: runtime tuning of detection thresholds, FPS cap, GPU acceleration, and class filters.
+ * Settings are grouped into tabs (detection / view / classes / alerts) via a ViewPager2.
  */
 class SettingsFragment : Fragment() {
 
-    private var _binding: FragmentSettingsBinding? = null
+    private var _binding: FragmentSettingsTabsBinding? = null
     private val binding get() = _binding!!
 
     private val viewModel: MainViewModel by activityViewModels()
     private val classCheckBoxes = mutableMapOf<Int, CheckBox>()
+
+    // Pre-inflated tab pages; the ViewPager2 adapter serves the same instances, so the
+    // fragment can wire listeners/observers right after setAdapter().
+    private lateinit var detectionPage: View
+    private lateinit var viewPage: View
+    private lateinit var classesPage: View
+    private lateinit var alertsPage: View
 
     // Guards against the settings-flow re-sync re-triggering the checkbox
     // change listener (which would call setClassFilter → re-emit → flicker loop).
@@ -55,7 +67,11 @@ class SettingsFragment : Fragment() {
         container: ViewGroup?,
         savedInstanceState: Bundle?,
     ): View {
-        _binding = FragmentSettingsBinding.inflate(inflater, container, false)
+        _binding = FragmentSettingsTabsBinding.inflate(inflater, container, false)
+        detectionPage = inflater.inflate(R.layout.tab_detection, container, false)
+        viewPage = inflater.inflate(R.layout.tab_view, container, false)
+        classesPage = inflater.inflate(R.layout.tab_classes, container, false)
+        alertsPage = inflater.inflate(R.layout.tab_alerts, container, false)
         return binding.root
     }
 
@@ -63,6 +79,7 @@ class SettingsFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
 
         displayAppVersion()
+        setupTabs()
         setupClassFilterCheckboxes()
         setupViewModeSpinner()
         setupDetectionViewSpinner()
@@ -73,15 +90,38 @@ class SettingsFragment : Fragment() {
         observeEmailAlerts()
     }
 
+    private fun setupTabs() {
+        val titles = resources.getStringArray(R.array.settings_tab_titles)
+        val pages = listOf(detectionPage, viewPage, classesPage, alertsPage)
+
+        binding.viewPager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            override fun getItemCount(): Int = pages.size
+
+            override fun getItemViewType(position: Int): Int = position
+
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder =
+                object : RecyclerView.ViewHolder(pages[viewType]) {}
+
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {}
+        }
+        // Keep every page alive so per-tab view state (type-in text, scroll) survives switching.
+        binding.viewPager.offscreenPageLimit = pages.size
+
+        TabLayoutMediator(binding.tabLayout, binding.viewPager) { tab, position ->
+            tab.text = titles[position]
+        }.attach()
+    }
+
     private fun setupViewModeSpinner() {
+        val spViewMode = viewPage.findViewById<Spinner>(R.id.spViewMode)
         val modes = resources.getStringArray(R.array.view_modes).toList()
-        binding.spViewMode.adapter = ArrayAdapter(
+        spViewMode.adapter = ArrayAdapter(
             requireContext(),
             android.R.layout.simple_spinner_item,
             modes,
         ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
 
-        binding.spViewMode.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+        spViewMode.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
                 if (position == currentViewModeOrdinal) return
                 currentViewModeOrdinal = position
@@ -93,14 +133,15 @@ class SettingsFragment : Fragment() {
     }
 
     private fun setupDetectionViewSpinner() {
+        val spDetectionView = viewPage.findViewById<Spinner>(R.id.spDetectionView)
         val views = resources.getStringArray(R.array.detection_views).toList()
-        binding.spDetectionView.adapter = ArrayAdapter(
+        spDetectionView.adapter = ArrayAdapter(
             requireContext(),
             android.R.layout.simple_spinner_item,
             views,
         ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
 
-        binding.spDetectionView.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+        spDetectionView.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
                 if (position == currentDetectionViewOrdinal) return
                 currentDetectionViewOrdinal = position
@@ -119,10 +160,12 @@ class SettingsFragment : Fragment() {
             levels,
         ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
 
-        binding.spEdgeDetail.adapter = adapter
-        binding.spHeatmapDetail.adapter = adapter
+        val spEdgeDetail = viewPage.findViewById<Spinner>(R.id.spEdgeDetail)
+        val spHeatmapDetail = viewPage.findViewById<Spinner>(R.id.spHeatmapDetail)
+        spEdgeDetail.adapter = adapter
+        spHeatmapDetail.adapter = adapter
 
-        binding.spEdgeDetail.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+        spEdgeDetail.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
                 if (position == currentEdgeDetailOrdinal) return
                 currentEdgeDetailOrdinal = position
@@ -132,7 +175,7 @@ class SettingsFragment : Fragment() {
             override fun onNothingSelected(parent: AdapterView<*>) {}
         }
 
-        binding.spHeatmapDetail.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+        spHeatmapDetail.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
                 if (position == currentHeatmapDetailOrdinal) return
                 currentHeatmapDetailOrdinal = position
@@ -155,12 +198,17 @@ class SettingsFragment : Fragment() {
     }
 
     private fun setupClassFilterCheckboxes() {
-        val container = binding.layoutClassFilters
+        val container = classesPage.findViewById<LinearLayout>(R.id.layoutClassFilters)
         container.removeAllViews()
 
         COCO_LABELS.forEachIndexed { index, label ->
             val checkBox = CheckBox(requireContext()).apply {
                 text = "$label (id: $index)"
+                // Self-contained button drawable: gray outline unchecked, solid
+                // green box with a white check when checked. Bypasses the theme's
+                // Material checkbox rendering, which tints box and check the same
+                // color so the check becomes invisible (seen as a bare green border).
+                buttonDrawable = ContextCompat.getDrawable(context, R.drawable.checkbox_class_filter)
                 setOnCheckedChangeListener { _, _ ->
                     if (syncingFromSettings) return@setOnCheckedChangeListener
                     val selectedIds = classCheckBoxes.filter { it.value.isChecked }.keys.toSet()
@@ -173,143 +221,180 @@ class SettingsFragment : Fragment() {
     }
 
     private fun setupListeners() {
-        binding.sliderConfidence.addOnChangeListener { slider, value, fromUser ->
+        val sliderConfidence = detectionPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderConfidence)
+        val tvConfValue = detectionPage.findViewById<android.widget.TextView>(R.id.tvConfValue)
+
+        sliderConfidence.addOnChangeListener { slider, value, fromUser ->
             if (fromUser) {
                 val snapped = snapToStep(value, 0.1f, 0.9f, 0.05f)
                 // Re-assign the snapped value back onto the slider so the transient
                 // off-grid drag value never reaches onDraw (BaseSlider.validateValues).
-                binding.sliderConfidence.value = snapped
-                binding.tvConfValue.text = "${(snapped * 100).toInt()}%"
+                sliderConfidence.value = snapped
+                tvConfValue.text = "${(snapped * 100).toInt()}%"
                 viewModel.setConfidenceThreshold(snapped)
             }
         }
 
-        binding.sliderIou.addOnChangeListener { slider, value, fromUser ->
+        val sliderIou = detectionPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderIou)
+        val tvIouValue = detectionPage.findViewById<android.widget.TextView>(R.id.tvIouValue)
+        sliderIou.addOnChangeListener { slider, value, fromUser ->
             if (fromUser) {
                 val snapped = snapToStep(value, 0.1f, 0.9f, 0.05f)
-                binding.sliderIou.value = snapped
-                binding.tvIouValue.text = "${(snapped * 100).toInt()}%"
+                sliderIou.value = snapped
+                tvIouValue.text = "${(snapped * 100).toInt()}%"
                 viewModel.setIouThreshold(snapped)
             }
         }
 
-        binding.sliderMaxObjects.addOnChangeListener { _, value, fromUser ->
+        val sliderMaxObjects = detectionPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMaxObjects)
+        val tvMaxObjectsValue = detectionPage.findViewById<android.widget.TextView>(R.id.tvMaxObjectsValue)
+        sliderMaxObjects.addOnChangeListener { _, value, fromUser ->
             if (fromUser) {
                 val intVal = value.toInt()
-                binding.tvMaxObjectsValue.text = "$intVal"
+                tvMaxObjectsValue.text = "$intVal"
                 viewModel.setMaxObjects(intVal)
             }
         }
 
-        binding.sliderFps.addOnChangeListener { _, value, fromUser ->
+        val sliderFps = detectionPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderFps)
+        val tvFpsValue = detectionPage.findViewById<android.widget.TextView>(R.id.tvFpsValue)
+        sliderFps.addOnChangeListener { _, value, fromUser ->
             if (fromUser) {
                 val intVal = value.toInt()
-                binding.tvFpsValue.text = "$intVal FPS"
+                tvFpsValue.text = "$intVal FPS"
                 viewModel.setInferenceRateFps(intVal)
             }
         }
 
-        binding.switchGpu.setOnCheckedChangeListener { _, isChecked ->
-            viewModel.setGpuEnabled(isChecked)
-        }
+        detectionPage.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchGpu)
+            .setOnCheckedChangeListener { _, isChecked ->
+                viewModel.setGpuEnabled(isChecked)
+            }
 
-        binding.btnSelectVehiclesOnly.setOnClickListener {
+        classesPage.findViewById<android.widget.Button>(R.id.btnSelectVehiclesOnly).setOnClickListener {
             viewModel.setClassFilter(VEHICLE_CLASS_IDS)
         }
 
-        binding.btnSelectAllClasses.setOnClickListener {
+        classesPage.findViewById<android.widget.Button>(R.id.btnSelectAllClasses).setOnClickListener {
             viewModel.setClassFilter(COCO_LABELS.indices.toSet())
         }
 
-        binding.btnResetDefaults.setOnClickListener {
+        val cbAllClasses = classesPage.findViewById<CheckBox>(R.id.cbAllClasses)
+        cbAllClasses.setOnCheckedChangeListener { _, checked ->
+            if (syncingFromSettings) return@setOnCheckedChangeListener
+            viewModel.setClassFilter(if (checked) COCO_LABELS.indices.toSet() else emptySet())
+        }
+
+        alertsPage.findViewById<android.widget.Button>(R.id.btnResetDefaults).setOnClickListener {
             viewModel.resetSettings()
         }
 
-        binding.sliderEdgeThreshold.addOnChangeListener { slider, value, fromUser ->
+        val sliderEdgeThreshold = viewPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderEdgeThreshold)
+        val tvEdgeThreshold = viewPage.findViewById<android.widget.TextView>(R.id.tvEdgeThreshold)
+        sliderEdgeThreshold.addOnChangeListener { slider, value, fromUser ->
             if (fromUser) {
                 val snapped = value.toInt()
-                binding.sliderEdgeThreshold.value = snapped.toFloat()
-                binding.tvEdgeThreshold.text = "$snapped"
+                sliderEdgeThreshold.value = snapped.toFloat()
+                tvEdgeThreshold.text = "$snapped"
                 viewModel.setEdgeThreshold(snapped)
             }
         }
 
-        binding.sliderMatrixDetail.addOnChangeListener { slider, value, fromUser ->
+        val sliderMatrixDetail = viewPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMatrixDetail)
+        val tvMatrixDetail = viewPage.findViewById<android.widget.TextView>(R.id.tvMatrixDetail)
+        sliderMatrixDetail.addOnChangeListener { slider, value, fromUser ->
             if (fromUser) {
                 val snapped = value.toInt().coerceIn(1, 10)
-                binding.sliderMatrixDetail.value = snapped.toFloat()
-                binding.tvMatrixDetail.text = "$snapped/10"
+                sliderMatrixDetail.value = snapped.toFloat()
+                tvMatrixDetail.text = "$snapped/10"
                 viewModel.setMatrixDetail(snapped)
             }
         }
 
-        binding.sliderMatrixGamma.addOnChangeListener { slider, value, fromUser ->
+        val sliderMatrixGamma = viewPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMatrixGamma)
+        val tvMatrixGamma = viewPage.findViewById<android.widget.TextView>(R.id.tvMatrixGamma)
+        sliderMatrixGamma.addOnChangeListener { slider, value, fromUser ->
             if (fromUser) {
                 val snapped = snapToStep(value, 0.5f, 1f, 0.01f)
-                binding.sliderMatrixGamma.value = snapped
-                binding.tvMatrixGamma.text = "${(snapped * 100).toInt()}%"
+                sliderMatrixGamma.value = snapped
+                tvMatrixGamma.text = "${(snapped * 100).toInt()}%"
                 viewModel.setMatrixGamma(snapped)
             }
         }
     }
 
     private fun setupEmailAlertListeners() {
-        binding.switchEmail.setOnCheckedChangeListener { _, isChecked ->
+        val switchEmail = alertsPage.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchEmail)
+        switchEmail.setOnCheckedChangeListener { _, isChecked ->
             viewModel.setEmailEnabled(isChecked)
         }
 
         // Text fields commit on focus-loss so each keystroke isn't persisted.
-        binding.etRecipient.onFocusChangeListener = object : View.OnFocusChangeListener {
+        val etRecipient = alertsPage.findViewById<com.google.android.material.textfield.TextInputEditText>(R.id.etRecipient)
+        etRecipient.onFocusChangeListener = object : View.OnFocusChangeListener {
             override fun onFocusChange(view: View, hasFocus: Boolean) {
-                if (!hasFocus) viewModel.setEmailRecipient(binding.etRecipient.text?.toString() ?: "")
+                if (!hasFocus) viewModel.setEmailRecipient(etRecipient.text?.toString() ?: "")
             }
         }
-        binding.etSenderEmail.onFocusChangeListener = object : View.OnFocusChangeListener {
+        val etSenderEmail = alertsPage.findViewById<com.google.android.material.textfield.TextInputEditText>(R.id.etSenderEmail)
+        etSenderEmail.onFocusChangeListener = object : View.OnFocusChangeListener {
             override fun onFocusChange(view: View, hasFocus: Boolean) {
-                if (!hasFocus) viewModel.setEmailSender(binding.etSenderEmail.text?.toString() ?: "")
+                if (!hasFocus) viewModel.setEmailSender(etSenderEmail.text?.toString() ?: "")
             }
         }
-        binding.etApiKey.onFocusChangeListener = object : View.OnFocusChangeListener {
+        val etApiKey = alertsPage.findViewById<com.google.android.material.textfield.TextInputEditText>(R.id.etApiKey)
+        etApiKey.onFocusChangeListener = object : View.OnFocusChangeListener {
             override fun onFocusChange(view: View, hasFocus: Boolean) {
                 if (!hasFocus) {
-                    val value = binding.etApiKey.text?.toString() ?: ""
+                    val value = etApiKey.text?.toString() ?: ""
                     if (value.isNotBlank()) viewModel.setEmailApiKey(value)
                     // Never leave the plaintext in the field after committing.
-                    binding.etApiKey.setText("")
+                    etApiKey.setText("")
                 }
             }
         }
 
-        binding.sliderCooldown.addOnChangeListener { _, value, fromUser ->
+        val sliderCooldown = alertsPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderCooldown)
+        val tvCooldownValue = alertsPage.findViewById<android.widget.TextView>(R.id.tvCooldownValue)
+        sliderCooldown.addOnChangeListener { _, value, fromUser ->
             if (fromUser) {
                 val secs = value.toInt().coerceIn(30, 120)
-                binding.sliderCooldown.value = secs.toFloat()
-                binding.tvCooldownValue.text = getString(R.string.email_cooldown_value, secs)
+                sliderCooldown.value = secs.toFloat()
+                tvCooldownValue.text = getString(R.string.email_cooldown_value, secs)
                 viewModel.setEmailCooldownSeconds(secs)
             }
         }
 
-        binding.btnTestEmail.setOnClickListener {
+        alertsPage.findViewById<android.widget.Button>(R.id.btnTestEmail).setOnClickListener {
             viewModel.sendTestAlertEmail()
         }
     }
 
     private fun observeEmailAlerts() {
+        val switchEmail = alertsPage.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchEmail)
+        val sliderCooldown = alertsPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderCooldown)
+        val tvCooldownValue = alertsPage.findViewById<android.widget.TextView>(R.id.tvCooldownValue)
+        val etRecipient = alertsPage.findViewById<com.google.android.material.textfield.TextInputEditText>(R.id.etRecipient)
+        val etSenderEmail = alertsPage.findViewById<com.google.android.material.textfield.TextInputEditText>(R.id.etSenderEmail)
+        val tvApiKeyStatus = alertsPage.findViewById<android.widget.TextView>(R.id.tvApiKeyStatus)
+        val btnTestEmail = alertsPage.findViewById<android.widget.Button>(R.id.btnTestEmail)
+        val tvTestEmailStatus = alertsPage.findViewById<android.widget.TextView>(R.id.tvTestEmailStatus)
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
                     viewModel.emailSettings.collect { s ->
-                        binding.switchEmail.isChecked = s.enabled
+                        switchEmail.isChecked = s.enabled
                         val secs = (s.cooldownMs / 1000).toInt().coerceIn(30, 120)
-                        binding.sliderCooldown.value = secs.toFloat()
-                        binding.tvCooldownValue.text = getString(R.string.email_cooldown_value, secs)
-                        if (!binding.etRecipient.isFocused) binding.etRecipient.setText(s.recipient)
-                        if (!binding.etSenderEmail.isFocused) binding.etSenderEmail.setText(s.senderEmail)
+                        sliderCooldown.value = secs.toFloat()
+                        tvCooldownValue.text = getString(R.string.email_cooldown_value, secs)
+                        if (!etRecipient.isFocused) etRecipient.setText(s.recipient)
+                        if (!etSenderEmail.isFocused) etSenderEmail.setText(s.senderEmail)
                     }
                 }
                 launch {
                     viewModel.emailApiKeyPresent.collect { present ->
-                        binding.tvApiKeyStatus.text = getString(
+                        tvApiKeyStatus.text = getString(
                             if (present) R.string.email_api_key_saved else R.string.email_api_key_missing
                         )
                     }
@@ -321,8 +406,8 @@ class SettingsFragment : Fragment() {
                     ) { running, detail ->
                         running to detail
                     }.collect { (running, detail) ->
-                        binding.btnTestEmail.isEnabled = !running
-                        binding.tvTestEmailStatus.text =
+                        btnTestEmail.isEnabled = !running
+                        tvTestEmailStatus.text =
                             if (running) getString(R.string.email_test_sending) else detail.orEmpty()
                     }
                 }
@@ -331,59 +416,86 @@ class SettingsFragment : Fragment() {
     }
 
     private fun observeSettings() {
+        val sliderConfidence = detectionPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderConfidence)
+        val tvConfValue = detectionPage.findViewById<android.widget.TextView>(R.id.tvConfValue)
+        val sliderIou = detectionPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderIou)
+        val tvIouValue = detectionPage.findViewById<android.widget.TextView>(R.id.tvIouValue)
+        val sliderMaxObjects = detectionPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMaxObjects)
+        val tvMaxObjectsValue = detectionPage.findViewById<android.widget.TextView>(R.id.tvMaxObjectsValue)
+        val sliderFps = detectionPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderFps)
+        val tvFpsValue = detectionPage.findViewById<android.widget.TextView>(R.id.tvFpsValue)
+        val switchGpu = detectionPage.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchGpu)
+
+        val cbAllClasses = classesPage.findViewById<CheckBox>(R.id.cbAllClasses)
+
+        val spViewMode = viewPage.findViewById<Spinner>(R.id.spViewMode)
+        val spDetectionView = viewPage.findViewById<Spinner>(R.id.spDetectionView)
+        val layoutEdgeQuality = viewPage.findViewById<LinearLayout>(R.id.layoutEdgeQuality)
+        val layoutHeatmapQuality = viewPage.findViewById<LinearLayout>(R.id.layoutHeatmapQuality)
+        val layoutMatrixQuality = viewPage.findViewById<LinearLayout>(R.id.layoutMatrixQuality)
+        val sliderEdgeThreshold = viewPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderEdgeThreshold)
+        val tvEdgeThreshold = viewPage.findViewById<android.widget.TextView>(R.id.tvEdgeThreshold)
+        val spEdgeDetail = viewPage.findViewById<Spinner>(R.id.spEdgeDetail)
+        val spHeatmapDetail = viewPage.findViewById<Spinner>(R.id.spHeatmapDetail)
+        val sliderMatrixDetail = viewPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMatrixDetail)
+        val tvMatrixDetail = viewPage.findViewById<android.widget.TextView>(R.id.tvMatrixDetail)
+        val sliderMatrixGamma = viewPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMatrixGamma)
+        val tvMatrixGamma = viewPage.findViewById<android.widget.TextView>(R.id.tvMatrixGamma)
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.settingsFlow.collect { settings ->
                     val snappedConfidence = snapToStep(settings.confidenceThreshold, 0.1f, 0.9f, 0.05f)
-                    binding.sliderConfidence.value = snappedConfidence
-                    binding.tvConfValue.text = "${(snappedConfidence * 100).toInt()}%"
+                    sliderConfidence.value = snappedConfidence
+                    tvConfValue.text = "${(snappedConfidence * 100).toInt()}%"
 
                     val snappedIou = snapToStep(settings.iouThreshold, 0.1f, 0.9f, 0.05f)
-                    binding.sliderIou.value = snappedIou
-                    binding.tvIouValue.text = "${(snappedIou * 100).toInt()}%"
+                    sliderIou.value = snappedIou
+                    tvIouValue.text = "${(snappedIou * 100).toInt()}%"
 
-                    binding.sliderMaxObjects.value = settings.maxObjects.toFloat()
-                    binding.tvMaxObjectsValue.text = "${settings.maxObjects}"
+                    sliderMaxObjects.value = settings.maxObjects.toFloat()
+                    tvMaxObjectsValue.text = "${settings.maxObjects}"
 
-                    binding.sliderFps.value = settings.inferenceRateFps.toFloat()
-                    binding.tvFpsValue.text = "${settings.inferenceRateFps} FPS"
+                    sliderFps.value = settings.inferenceRateFps.toFloat()
+                    tvFpsValue.text = "${settings.inferenceRateFps} FPS"
 
-                    binding.switchGpu.isChecked = settings.enableGpuDelegate
+                    switchGpu.isChecked = settings.enableGpuDelegate
 
                     syncingFromSettings = true
                     classCheckBoxes.forEach { (id, checkBox) ->
                         checkBox.isChecked = id in settings.classFilter
                     }
+                    cbAllClasses.isChecked = settings.classFilter.size == COCO_LABELS.size
                     syncingFromSettings = false
 
                     currentViewModeOrdinal = settings.viewMode.ordinal
-                    binding.spViewMode.setSelection(settings.viewMode.ordinal)
+                    spViewMode.setSelection(settings.viewMode.ordinal)
 
                     currentDetectionViewOrdinal = settings.detectionView.ordinal
-                    binding.spDetectionView.setSelection(settings.detectionView.ordinal)
+                    spDetectionView.setSelection(settings.detectionView.ordinal)
 
                     // Show only the quality controls belonging to the active view mode.
-                    binding.layoutEdgeQuality.visibility =
+                    layoutEdgeQuality.visibility =
                         if (settings.viewMode == ViewMode.EDGE) View.VISIBLE else View.GONE
-                    binding.layoutHeatmapQuality.visibility =
+                    layoutHeatmapQuality.visibility =
                         if (settings.viewMode == ViewMode.HEATMAP) View.VISIBLE else View.GONE
-                    binding.layoutMatrixQuality.visibility =
+                    layoutMatrixQuality.visibility =
                         if (settings.viewMode == ViewMode.MATRIX) View.VISIBLE else View.GONE
 
-                    binding.sliderEdgeThreshold.value = settings.edgeThreshold.toFloat()
-                    binding.tvEdgeThreshold.text = "${settings.edgeThreshold}"
+                    sliderEdgeThreshold.value = settings.edgeThreshold.toFloat()
+                    tvEdgeThreshold.text = "${settings.edgeThreshold}"
                     currentEdgeDetailOrdinal = settings.edgeDetail - 1
-                    binding.spEdgeDetail.setSelection(settings.edgeDetail - 1)
+                    spEdgeDetail.setSelection(settings.edgeDetail - 1)
 
                     currentHeatmapDetailOrdinal = settings.heatmapDetail - 1
-                    binding.spHeatmapDetail.setSelection(settings.heatmapDetail - 1)
+                    spHeatmapDetail.setSelection(settings.heatmapDetail - 1)
 
-                    binding.sliderMatrixDetail.value = settings.matrixDetail.toFloat()
-                    binding.tvMatrixDetail.text = "${settings.matrixDetail}/10"
+                    sliderMatrixDetail.value = settings.matrixDetail.toFloat()
+                    tvMatrixDetail.text = "${settings.matrixDetail}/10"
 
                     val snappedGamma = snapToStep(settings.matrixGamma, 0.5f, 1f, 0.01f)
-                    binding.sliderMatrixGamma.value = snappedGamma
-                    binding.tvMatrixGamma.text = "${(snappedGamma * 100).toInt()}%"
+                    sliderMatrixGamma.value = snappedGamma
+                    tvMatrixGamma.text = "${(snappedGamma * 100).toInt()}%"
                 }
             }
         }

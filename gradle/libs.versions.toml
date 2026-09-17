@@ -13,6 +13,7 @@ accompanist = "0.34.0"
 coroutines = "1.8.1"
 navigation = "2.8.1"
 material = "1.12.0"
+viewpager2 = "1.1.0"
 constraintlayout = "2.1.4"
 okhttp = "4.12.0"
 securityCrypto = "1.1.0-alpha06"
@@ -39,6 +40,7 @@ accompanist-permissions = { group = "com.google.accompanist", name = "accompanis
 navigation-fragment-ktx = { group = "androidx.navigation", name = "navigation-fragment-ktx", version.ref = "navigation" }
 navigation-ui-ktx = { group = "androidx.navigation", name = "navigation-ui-ktx", version.ref = "navigation" }
 material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+viewpager2 = { group = "androidx.viewpager2", name = "viewpager2", version.ref = "viewpager2" }
 constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
 okhttp = { group = "com.squareup.okhttp3", name = "okhttp", version.ref = "okhttp" }
 androidx-security-crypto = { group = "androidx.security", name = "security-crypto", version.ref = "securityCrypto" }

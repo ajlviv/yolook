@@ -8,12 +8,23 @@
     <string name="fab_toggle_mode">Toggle count mode</string>
     <string name="history_empty">No detections yet</string>
     <string name="history_clear">Clear history</string>
+    <string name="settings_tab_detection">Detection</string>
+    <string name="settings_tab_view">View</string>
+    <string name="settings_tab_classes">Classes</string>
+    <string name="settings_tab_alerts">Alerts</string>
+    <string-array name="settings_tab_titles">
+        <item>@string/settings_tab_detection</item>
+        <item>@string/settings_tab_view</item>
+        <item>@string/settings_tab_classes</item>
+        <item>@string/settings_tab_alerts</item>
+    </string-array>
     <string name="settings_conf_threshold">Confidence threshold</string>
     <string name="settings_iou_threshold">IoU threshold</string>
     <string name="settings_max_objects">Max objects per frame</string>
     <string name="settings_inference_fps">Inference FPS cap</string>
     <string name="settings_gpu_delegate">Use GPU delegate</string>
     <string name="settings_class_filter">Class filter</string>
+    <string name="settings_select_all">Select all</string>
     <string name="settings_view_mode">View mode</string>
     <string name="settings_detection_view">Detection view</string>
     <string name="detection_view_labels">Default (box with class name)</string>
