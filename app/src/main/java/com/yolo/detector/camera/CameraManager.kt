@@ -248,6 +248,7 @@ class CameraManager(
                         onAlert?.invoke(trigger, alertFrame)
                     }
                 }
+                }
             } catch (e: Exception) {
                 android.util.Log.e("CameraManager", "Analysis error", e)
             } finally {
