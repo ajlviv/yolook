@@ -14,6 +14,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.yolo.detector.R
 import com.yolo.detector.data.HistoryEntry
+import com.yolo.detector.data.HistoryItem
 import com.yolo.detector.data.labelFor
 import com.yolo.detector.databinding.FragmentHistoryBinding
 import com.yolo.detector.ui.MainViewModel
@@ -23,8 +24,9 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * History fragment: displays an in-memory list of the objects seen, grouped by
- * track so each object appears once with its aggregate stats
+ * History fragment: displays an in-memory list of the objects seen (grouped by
+ * track so each object appears once with its aggregate stats) interleaved with
+ * dispatched alert notifications.
  */
 class HistoryFragment : Fragment() {
 
@@ -70,27 +72,61 @@ class HistoryFragment : Fragment() {
     }
 
     private class HistoryAdapter : RecyclerView.Adapter<HistoryAdapter.ViewHolder>() {
-        private var items = listOf<HistoryEntry>()
+        private var items = listOf<HistoryItem>()
         private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-        fun submitList(newItems: List<HistoryEntry>) {
+        fun submitList(newItems: List<HistoryItem>) {
             items = newItems
             notifyDataSetChanged()
         }
 
+        override fun getItemViewType(position: Int): Int = when (items[position]) {
+            is HistoryItem.Detection -> TYPE_DETECTION
+            is HistoryItem.Alert -> TYPE_ALERT
+        }
+
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
+            val layout = if (viewType == TYPE_ALERT) {
+                R.layout.item_history_alert
+            } else {
+                R.layout.item_history_detection
+            }
             val view = LayoutInflater.from(parent.context)
-                .inflate(R.layout.item_history_detection, parent, false)
+                .inflate(layout, parent, false)
             return ViewHolder(view)
         }
 
         override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-            val item = items[position]
+            when (val item = items[position]) {
+                is HistoryItem.Detection -> bindDetection(holder, item.entry)
+                is HistoryItem.Alert -> bindAlert(holder, item)
+            }
+        }
+
+        private fun bindDetection(holder: ViewHolder, item: HistoryEntry) {
             val label = labelFor(item.classId)
             val track = if (item.trackId >= 0) "#${item.trackId}" else "?"
             val best = "${(item.bestConfidence * 100).toInt()}%"
             holder.tvTitle.text = "$label $track · seen ${item.count}×"
             holder.tvSubtitle.text = "best $best · ${formatTimeSpan(item)}"
+        }
+
+        private fun bindAlert(holder: ViewHolder, item: HistoryItem.Alert) {
+            val labels = item.classIds
+                .map { labelFor(it) }
+                .distinct()
+                .joinToString(", ")
+            val res = holder.itemView.context.resources
+            holder.tvTitle.text = if (item.emailSent) {
+                res.getString(R.string.history_alert_sent, labels)
+            } else {
+                res.getString(R.string.history_alert_failed, labels)
+            }
+            @Suppress("DEPRECATION")
+            holder.tvTitle.setTextColor(
+                res.getColor(if (item.emailSent) R.color.alert_sent else R.color.alert_failed),
+            )
+            holder.tvSubtitle.text = timeFormat.format(Date(item.timestampMs))
         }
 
         private fun formatTimeSpan(item: HistoryEntry): String {
@@ -108,6 +144,11 @@ class HistoryFragment : Fragment() {
         class ViewHolder(view: View) : RecyclerView.ViewHolder(view) {
             val tvTitle: TextView = view.findViewById(R.id.tvTitle)
             val tvSubtitle: TextView = view.findViewById(R.id.tvSubtitle)
+        }
+
+        companion object {
+            private const val TYPE_DETECTION = 0
+            private const val TYPE_ALERT = 1
         }
     }
 }
