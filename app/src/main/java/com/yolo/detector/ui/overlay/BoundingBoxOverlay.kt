@@ -76,6 +76,20 @@ class BoundingBoxOverlay @JvmOverloads constructor(
     private var detections: List<Detection> = emptyList()
 
     /**
+     * Aspect ratio (width/height) of the frame the detections are normalised to
+     * (the rotated analysis bitmap). The overlay uses it to draw boxes inside the
+     * centered crop the `fillCenter` preview actually shows. A non-positive value
+     * means "unknown" and falls back to mapping across the whole view.
+     */
+    var frameAspectRatio: Float = -1f
+        set(value) {
+            if (field != value) {
+                field = value
+                postInvalidate()
+            }
+        }
+
+    /**
      * How boxes/labels are rendered. [DetectionView.OBJECTS_ONLY] draws nothing
      * — the frame itself is masked (see LiveFragment), so objects show through
      * with no extra box strokes or labels.
@@ -119,16 +133,25 @@ class BoundingBoxOverlay @JvmOverloads constructor(
         val w = width.toFloat()
         val h = height.toFloat()
 
+        // PreviewView uses fillCenter: when the view and frame aspects differ, only
+        // the centered crop of the frame is visible. Boxes must be mapped inside
+        // that window or they drift relative to the objects on screen.
+        val content = OverlayGeometry.fillCenterContentRect(w, h, frameAspectRatio)
+        val offsetX = content?.left ?: 0f
+        val offsetY = content?.top ?: 0f
+        val contentW = content?.width ?: w
+        val contentH = content?.height ?: h
+
         canvas.save()
         canvas.clipRect(0f, 0f, w, h)
 
         for ((index, det) in detections.withIndex()) {
             val color = getColorForClass(det.classId)
 
-            val left   = det.bbox.left   * w
-            val top    = det.bbox.top    * h
-            val right  = det.bbox.right  * w
-            val bottom = det.bbox.bottom * h
+            val left   = offsetX + det.bbox.left   * contentW
+            val top    = offsetY + det.bbox.top    * contentH
+            val right  = offsetX + det.bbox.right  * contentW
+            val bottom = offsetY + det.bbox.bottom * contentH
 
             // ── Bounding box ───────────────────────────────────────────────────
             boxPaint.color = color
@@ -207,3 +230,52 @@ class BoundingBoxOverlay @JvmOverloads constructor(
  * Pure helper so the numbering format is unit-testable.
  */
 fun countLabelFor(number: Int): String = number.coerceAtLeast(1).toString()
+
+/**
+ * Pure geometry for aligning the bounding-box overlay with the cropped camera
+ * preview. Kept float-only (no android types) so the math is JVM-unit-testable.
+ */
+object OverlayGeometry {
+
+    /** Content window, in view pixels, that the cropped frame occupies. */
+    data class ContentRect(
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+    ) {
+        val width: Float get() = right - left
+        val height: Float get() = bottom - top
+    }
+
+    /**
+     * Computes the content rect for a `scaleType="fillCenter"` view: the camera
+     * content is scaled to cover the whole view and, when the view aspect differs
+     * from the frame aspect, the overflow is cropped symmetrically.
+     *
+     * Detections are normalised to the *frame*, so they must be drawn inside this
+     * window — otherwise boxes span the full view and drift from the objects.
+     *
+     * @return null when no crop applies (aspects match, or inputs are unknown).
+     */
+    fun fillCenterContentRect(viewW: Float, viewH: Float, frameAspect: Float): ContentRect? {
+        if (viewW <= 0f || viewH <= 0f || frameAspect <= 0f || !frameAspect.isFinite()) return null
+        val viewAspect = viewW / viewH
+        if (kotlin.math.abs(viewAspect - frameAspect) < 1e-4f) return null
+
+        val contentW: Float
+        val contentH: Float
+        if (frameAspect > viewAspect) {
+            // Frame is relatively wider: it fills the view height and overflows the sides.
+            contentH = viewH
+            contentW = viewH * frameAspect
+        } else {
+            // Frame is relatively taller: it fills the view width and overflows top/bottom.
+            contentW = viewW
+            contentH = viewW / frameAspect
+        }
+        val left = (viewW - contentW) / 2f
+        val top = (viewH - contentH) / 2f
+        return ContentRect(left, top, left + contentW, top + contentH)
+    }
+}

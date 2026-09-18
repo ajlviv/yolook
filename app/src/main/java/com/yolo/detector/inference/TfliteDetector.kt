@@ -201,7 +201,7 @@ class TfliteDetector(
             }
         }
 
-        return applyNms(all)
+        return applyFusionNms(all)
             .sortedByDescending { it.confidence }
             .take(settings.maxObjects)
     }
@@ -370,22 +370,44 @@ class TfliteDetector(
         return result
     }
 
-    private fun iou(a: RectF, b: RectF): Float {
-        val interLeft   = maxOf(a.left, b.left)
-        val interTop    = maxOf(a.top, b.top)
-        val interRight  = minOf(a.right, b.right)
-        val interBottom = minOf(a.bottom, b.bottom)
+    /**
+     * SAHI-style fusion pass used for sliced detections, mirroring `sahi`'s
+     * GREEDYNMM postprocessing.
+     *
+     * Same greedy within-class suppression as [applyNms], but matching on IOS
+     * (intersection over the smaller area) instead of IoU. The duplicate from a
+     * tile seam is a *contained* partial box: it can be a fraction of the full
+     * box's area, so its IoU with the full box easily stays below the threshold —
+     * while its IOS is ~1. A single object detected in two tiles therefore
+     * collapses to one detection instead of two tracks.
+     */
+    private fun applyFusionNms(detections: List<Detection>): List<Detection> {
+        val result = mutableListOf<Detection>()
+        val byClass = detections.groupBy { it.classId }
 
-        val interW = (interRight - interLeft).coerceAtLeast(0f)
-        val interH = (interBottom - interTop).coerceAtLeast(0f)
-        val intersection = interW * interH
+        for ((_, group) in byClass) {
+            val sorted = group.sortedByDescending { it.confidence }.toMutableList()
+            val keep = BooleanArray(sorted.size) { true }
 
-        val areaA = (a.right - a.left) * (a.bottom - a.top)
-        val areaB = (b.right - b.left) * (b.bottom - b.top)
-        val union = areaA + areaB - intersection
-
-        return if (union <= 0f) 0f else intersection / union
+            for (i in sorted.indices) {
+                if (!keep[i]) continue
+                result.add(sorted[i])
+                for (j in i + 1 until sorted.size) {
+                    if (!keep[j]) continue
+                    if (ios(sorted[i].bbox, sorted[j].bbox) > settings.iouThreshold) {
+                        keep[j] = false
+                    }
+                }
+            }
+        }
+        return result
     }
+
+    private fun iou(a: RectF, b: RectF): Float =
+        BboxMetrics.iou(a.left, a.top, a.right, a.bottom, b.left, b.top, b.right, b.bottom)
+
+    private fun ios(a: RectF, b: RectF): Float =
+        BboxMetrics.ios(a.left, a.top, a.right, a.bottom, b.left, b.top, b.right, b.bottom)
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
