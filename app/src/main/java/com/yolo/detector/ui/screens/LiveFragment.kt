@@ -107,6 +107,9 @@ class LiveFragment : Fragment() {
         binding.overlay.detectionView = viewModel.currentSettingsSnapshot.detectionView
         currentMode = viewModel.currentSettingsSnapshot.viewMode
         currentDetectionView = viewModel.currentSettingsSnapshot.detectionView
+        // Crop alignment depends on the camera frame aspect; seed it before the
+        // async collector emits so the first drawn boxes are already positioned.
+        binding.overlay.frameAspectRatio = viewModel.currentFrameAspectRatio
         // Pre-seed the bake-quality params from the persisted snapshot so the
         // first bakes (before settingsFlow emits) already use stored values.
         val seed = viewModel.currentSettingsSnapshot
@@ -190,6 +193,11 @@ class LiveFragment : Fragment() {
                         binding.overlay.setDetections(detections)
                         latestDetections = detections
                         if (showCountHud()) refreshCountHud()
+                    }
+                }
+                launch {
+                    viewModel.frameAspectRatio.collect { aspect ->
+                        binding.overlay.frameAspectRatio = aspect
                     }
                 }
                 launch {
@@ -666,7 +674,13 @@ class LiveFragment : Fragment() {
             val top = (h - dh) / 2
             canvas.drawBitmap(frame, null, android.graphics.Rect(left, top, left + dw, top + dh), paint)
         }
+        // Merge the bounding-box overlay over the frame. The frame already fills
+        // the snapshot canvas (cropped above), so the overlay's fillCenter crop
+        // must be disabled for this draw — otherwise boxes would be double-cropped.
+        val snapshotAspect = binding.overlay.frameAspectRatio
+        binding.overlay.frameAspectRatio = -1f
         binding.overlay.draw(canvas)
+        binding.overlay.frameAspectRatio = snapshotAspect
         frame.recycle()
 
         viewModel.saveSnapshot(merged)

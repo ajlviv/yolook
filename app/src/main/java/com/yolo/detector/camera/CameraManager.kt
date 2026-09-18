@@ -64,6 +64,15 @@ class CameraManager(
     private val _cameraError = MutableStateFlow<String?>(null)
     val cameraError: StateFlow<String?> = _cameraError
 
+    /**
+     * Aspect ratio (width/height) of the analysis bitmap that detections are
+     * normalised to. Set once per frame kept for inference; stays 0f until the
+     * first frame is processed. LiveFragment feeds this to the bounding-box
+     * overlay so its fillCenter crop matches the preview's.
+     */
+    private val _frameAspectRatio = MutableStateFlow(0f)
+    val frameAspectRatio: StateFlow<Float> = _frameAspectRatio
+
     // ── Email-alert throttling ───────────────────────────────────────────────
     // Global alert state machine, fed once per inference frame (see processFrame).
     private val alertThrottler = DetectionThrottler()
@@ -212,6 +221,7 @@ class CameraManager(
             return
         }
         imageProxy.close()  // Must close before launching work
+        _frameAspectRatio.value = bitmap.width.toFloat() / bitmap.height
 
         scope.launch {
             try {
@@ -286,5 +296,6 @@ class CameraManager(
         _cameraError.value = null
         _detectionFlow.value = emptyList()
         _frameFlow.value = null
+        _frameAspectRatio.value = 0f
     }
 }

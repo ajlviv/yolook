@@ -69,6 +69,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _frameFlow = MutableStateFlow<Bitmap?>(null)
     val frameFlow: StateFlow<Bitmap?> = _frameFlow.asStateFlow()
 
+    /** Mirrors the active [CameraManager.frameAspectRatio] for the overlay crop math. */
+    private val _frameAspectRatio = MutableStateFlow(0f)
+    val frameAspectRatio: StateFlow<Float> = _frameAspectRatio.asStateFlow()
+
     /** Per-track aggregate of every object seen so far; key is the [HistoryEntry] track identity. */
     private val historyByTrack = mutableMapOf<Int, HistoryEntry>()
 
@@ -114,6 +118,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     /** Latest settings snapshot for synchronous reads (updated by the collector above). */
     val currentSettingsSnapshot: InferenceSettings get() = currentSettings
 
+    /** Latest known frame aspect ratio for the overlay's fillCenter crop alignment. */
+    val currentFrameAspectRatio: Float get() = _frameAspectRatio.value
+
     // ── Settings → pipeline reactivity ────────────────────────────────────────
 
     private var currentSettings: InferenceSettings = InferenceSettings()
@@ -150,6 +157,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 coroutineScope {
                     launch { collectDetections(mgr) }
                     launch { mgr.frameFlow.collect { _frameFlow.value = it } }
+                    launch { mgr.frameAspectRatio.collect { _frameAspectRatio.value = it } }
                     launch { mgr.cameraError.collect { msg -> _cameraError.value = msg } }
                 }
             }
@@ -472,6 +480,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setMaxObjects(v: Int)            = viewModelScope.launch { settingsRepo.setMaxObjects(v) }
     fun setInferenceRateFps(v: Int)      = viewModelScope.launch { settingsRepo.setInferenceRateFps(v) }
     fun setGpuEnabled(v: Boolean)        = viewModelScope.launch { settingsRepo.setGpuEnabled(v) }
+    fun setSlicedInference(v: Boolean)   = viewModelScope.launch { settingsRepo.setSlicedInference(v) }
     fun setClassFilter(ids: Set<Int>)    = viewModelScope.launch { settingsRepo.setClassFilter(ids) }
     fun setViewMode(mode: ViewMode)      = viewModelScope.launch { settingsRepo.setViewMode(mode) }
     fun setDetectionView(view: DetectionView) = viewModelScope.launch { settingsRepo.setDetectionView(view) }

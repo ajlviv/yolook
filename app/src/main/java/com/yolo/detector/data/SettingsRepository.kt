@@ -40,6 +40,7 @@ class SettingsRepository(context: Context) {
         val MAX_OBJECTS = intPreferencesKey("max_objects")
         val INFERENCE_FPS = intPreferencesKey("inference_fps")
         val GPU_ENABLED = booleanPreferencesKey("gpu_enabled")
+        val SLICED_INFERENCE = booleanPreferencesKey("sliced_inference")
         // Stored as a comma-separated string of integers, e.g. "2,3,5,7"
         val CLASS_FILTER_IDS = stringPreferencesKey("class_filter_ids")
         // Stored as the enum name, e.g. "HEATMAP"
@@ -76,6 +77,7 @@ class SettingsRepository(context: Context) {
             maxObjects = this[Keys.MAX_OBJECTS] ?: 50,
             inferenceRateFps = this[Keys.INFERENCE_FPS] ?: 10,
             enableGpuDelegate = this[Keys.GPU_ENABLED] ?: true,
+            slicedInference = this[Keys.SLICED_INFERENCE] ?: false,
             classFilter = filterIds,
             viewMode = this[Keys.VIEW_MODE]?.toViewMode() ?: ViewMode.NORMAL,
             detectionView = this[Keys.DETECTION_VIEW]?.toDetectionView() ?: DetectionView.LABELS,
@@ -113,6 +115,10 @@ class SettingsRepository(context: Context) {
 
     suspend fun setGpuEnabled(value: Boolean) {
         dataStore.edit { it[Keys.GPU_ENABLED] = value }
+    }
+
+    suspend fun setSlicedInference(value: Boolean) {
+        dataStore.edit { it[Keys.SLICED_INFERENCE] = value }
     }
 
     suspend fun setClassFilter(ids: Set<Int>) {
