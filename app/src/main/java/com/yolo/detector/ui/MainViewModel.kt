@@ -472,6 +472,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setMaxObjects(v: Int)            = viewModelScope.launch { settingsRepo.setMaxObjects(v) }
     fun setInferenceRateFps(v: Int)      = viewModelScope.launch { settingsRepo.setInferenceRateFps(v) }
     fun setGpuEnabled(v: Boolean)        = viewModelScope.launch { settingsRepo.setGpuEnabled(v) }
+    fun setSlicedInference(v: Boolean)   = viewModelScope.launch { settingsRepo.setSlicedInference(v) }
     fun setClassFilter(ids: Set<Int>)    = viewModelScope.launch { settingsRepo.setClassFilter(ids) }
     fun setViewMode(mode: ViewMode)      = viewModelScope.launch { settingsRepo.setViewMode(mode) }
     fun setDetectionView(view: DetectionView) = viewModelScope.launch { settingsRepo.setDetectionView(view) }

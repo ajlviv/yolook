@@ -271,6 +271,11 @@ class SettingsFragment : Fragment() {
                 viewModel.setGpuEnabled(isChecked)
             }
 
+        detectionPage.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchSliced)
+            .setOnCheckedChangeListener { _, isChecked ->
+                viewModel.setSlicedInference(isChecked)
+            }
+
         classesPage.findViewById<android.widget.Button>(R.id.btnSelectVehiclesOnly).setOnClickListener {
             viewModel.setClassFilter(VEHICLE_CLASS_IDS)
         }
@@ -425,6 +430,7 @@ class SettingsFragment : Fragment() {
         val sliderFps = detectionPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderFps)
         val tvFpsValue = detectionPage.findViewById<android.widget.TextView>(R.id.tvFpsValue)
         val switchGpu = detectionPage.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchGpu)
+        val switchSliced = detectionPage.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchSliced)
 
         val cbAllClasses = classesPage.findViewById<CheckBox>(R.id.cbAllClasses)
 
@@ -460,6 +466,7 @@ class SettingsFragment : Fragment() {
                     tvFpsValue.text = "${settings.inferenceRateFps} FPS"
 
                     switchGpu.isChecked = settings.enableGpuDelegate
+                    switchSliced.isChecked = settings.slicedInference
 
                     syncingFromSettings = true
                     classCheckBoxes.forEach { (id, checkBox) ->

@@ -25,6 +25,8 @@
     <string name="settings_max_objects">Max objects per frame</string>
     <string name="settings_inference_fps">Inference FPS cap</string>
     <string name="settings_gpu_delegate">Use GPU delegate</string>
+    <string name="settings_sliced_inference">Sliced detection (SAHI-style)</string>
+    <string name="settings_sliced_inference_hint">Tiles the frame into overlapping 640×640 crops to find small objects. Improves accuracy at ~6× the inference cost.</string>
     <string name="settings_class_filter">Class filter</string>
     <string name="settings_select_all">Select all</string>
     <string name="settings_view_mode">View mode</string>

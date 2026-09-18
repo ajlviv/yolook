@@ -20,6 +20,14 @@ data class InferenceSettings(
     val enableGpuDelegate: Boolean = true,
 
     /**
+     * SAHI-style sliced detection: tiles the frame into overlapping 640×640 crops,
+     * detects each at full input resolution, and fuses the results. Improves
+     * small/distant-object recall but multiplies inference cost (~6× on a
+     * 1280×720 feed). Default off; use only when accuracy matters more than FPS.
+     */
+    val slicedInference: Boolean = false,
+
+    /**
      * Set of COCO class IDs whose detections are rendered and tracked.
      * Defaults to all 80 COCO classes.
      */

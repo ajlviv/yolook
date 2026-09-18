@@ -1,6 +1,9 @@
 package com.yolo.detector.inference
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.content.Context
 import com.yolo.detector.data.Detection
@@ -19,6 +22,13 @@ private const val NUM_BOXES = 8400
 private const val NUM_CLASSES = 80
 
 /**
+ * Overlap between neighbouring tiles of SAHI-style sliced inference, as a
+ * fraction of the tile size. Keeps objects straddling a tile seam from being
+ * split in half (and thus missed).
+ */
+private const val SLICE_OVERLAP = 0.2f
+
+/**
  * On-device YOLOv8m detector powered by TensorFlow Lite.
  *
  * Loads `yolov8m.tflite` from assets and runs inference with hardware acceleration
@@ -30,6 +40,13 @@ private const val NUM_CLASSES = 80
  *
  * This class applies class-confidence filtering, class filter masking, and greedy NMS
  * to return a clean `List<Detection>` (trackId = -1; ByteTracker assigns real IDs).
+ *
+ * When [InferenceSettings.slicedInference] is enabled, the frame is first tiled into
+ * overlapping 640×640 crops (SAHI-style, see [SliceGrid]) and each tile is run through
+ * the model at full input resolution; the results are fused back to frame coordinates
+ * and globally NMS'd. This roughly doubles the effective resolution the detector sees,
+ * which helps recall on small/distant objects at the cost of ~6× more inference work
+ * per frame.
  *
  * Thread safety: [detect] must be called from a single background thread.
  * Close this instance when the camera pipeline shuts down.
@@ -56,7 +73,19 @@ class TfliteDetector(
         .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * 3 * 4)
         .apply { order(ByteOrder.nativeOrder()) }
     private val inputFloatBuffer: java.nio.FloatBuffer = inputBuffer.asFloatBuffer()
+
+    // Reused across every inference call (incl. every slice) to avoid ~1.2M-float allocations.
+    private val inputFloatArr = FloatArray(INPUT_SIZE * INPUT_SIZE * 3)
     private val scaledPixels = IntArray(INPUT_SIZE * INPUT_SIZE)
+
+    // Reusable 640×640 staging bitmap for SAHI-style sliced inference.
+    private var tileBitmap: Bitmap? = null
+    private var tileCanvas: Canvas? = null
+    private val tilePaint = Paint().apply { isFilterBitmap = true }
+
+    // Tile grid cached per frame size (frames are a constant resolution while bound).
+    private val tilesCacheKey = intArrayOf(0, 0)
+    private var cachedTiles: List<SliceGrid.Tile> = emptyList()
 
     init {
         val model = loadModelFile(context)
@@ -118,10 +147,17 @@ class TfliteDetector(
     /**
      * Runs inference on [bitmap] and returns filtered, NMS-deduplicated detections.
      *
-     * @param bitmap Source frame. Will be scaled to 640×640 internally.
+     * @param bitmap Source frame. Will be scaled to 640×640 internally (or, when
+     *        [InferenceSettings.slicedInference] is on, tiled into 640×640 crops
+     *        that are fused back to frame coordinates).
      * @return List of [Detection] with trackId = -1 (untracked).
      */
     fun detect(bitmap: Bitmap): List<Detection> {
+        val timestampMs = System.currentTimeMillis()
+        if (settings.slicedInference) {
+            return detectSliced(bitmap, timestampMs)
+        }
+
         val scaled = if (bitmap.width == INPUT_SIZE && bitmap.height == INPUT_SIZE) {
             bitmap
         } else {
@@ -133,37 +169,92 @@ class TfliteDetector(
             scaled.recycle()
         }
 
+        return runOnInput(timestampMs).take(settings.maxObjects)
+    }
+
+    /**
+     * SAHI-style sliced inference: runs the model on the overlapping tile grid
+     * covering the frame, then fuses the tile-local detections back to frame
+     * coordinates and NMS'ing them globally.
+     */
+    private fun detectSliced(bitmap: Bitmap, timestampMs: Long): List<Detection> {
+        val srcW = bitmap.width
+        val srcH = bitmap.height
+
+        if (srcW != tilesCacheKey[0] || srcH != tilesCacheKey[1]) {
+            cachedTiles = SliceGrid.compute(srcW, srcH, INPUT_SIZE, SLICE_OVERLAP)
+            tilesCacheKey[0] = srcW
+            tilesCacheKey[1] = srcH
+        }
+
+        val canvas = ensureTileCanvas()
+        val all = ArrayList<Detection>(32 * cachedTiles.size)
+        for (tile in cachedTiles) {
+            drawTile(bitmap, canvas, tile)
+            for (detection in runOnInput(timestampMs)) {
+                val bbox = detection.bbox
+                val mapped = SliceGrid.mapToFrame(
+                    tile, srcW, srcH,
+                    SliceGrid.Box(bbox.left, bbox.top, bbox.right, bbox.bottom),
+                )
+                all.add(detection.copy(bbox = RectF(mapped.left, mapped.top, mapped.right, mapped.bottom)))
+            }
+        }
+
+        return applyNms(all)
+            .sortedByDescending { it.confidence }
+            .take(settings.maxObjects)
+    }
+
+    private fun ensureTileCanvas(): Canvas =
+        tileCanvas ?: run {
+            val bmp = Bitmap.createBitmap(INPUT_SIZE, INPUT_SIZE, Bitmap.Config.ARGB_8888)
+            tileBitmap = bmp
+            Canvas(bmp).also { tileCanvas = it }
+        }
+
+    /** Draws [tile] of [source] into the reusable 640×640 tile bitmap and reads its pixels. */
+    private fun drawTile(source: Bitmap, canvas: Canvas, tile: SliceGrid.Tile) {
+        val srcRect = Rect(tile.left, tile.top, tile.right, tile.bottom)
+        val dstRect = RectF(0f, 0f, INPUT_SIZE.toFloat(), INPUT_SIZE.toFloat())
+        canvas.drawBitmap(source, srcRect, dstRect, tilePaint)
+        tileBitmap!!.getPixels(scaledPixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+    }
+
+    /**
+     * Converts [scaledPixels] (a 640×640 frame in ARGB ints, either the full frame
+     * or one slice) into the input buffer, runs the interpreter, and parses the raw
+     * output tensor into filtered, NMS-deduplicated detections.
+     */
+    private fun runOnInput(timestampMs: Long): List<Detection> {
         inputFloatBuffer.rewind()
         val norm = normTable
+        val floatArr = inputFloatArr
         if (isInputChannelsFirst) {
             // NCHW format: RRR... GGG... BBB...
             val planeSize = INPUT_SIZE * INPUT_SIZE
-            val floatArr = FloatArray(planeSize * 3)
             for (i in 0 until planeSize) {
                 val pixel = scaledPixels[i]
                 floatArr[i] = norm[(pixel shr 16) and 0xFF]
                 floatArr[planeSize + i] = norm[(pixel shr 8) and 0xFF]
                 floatArr[planeSize * 2 + i] = norm[pixel and 0xFF]
             }
-            inputFloatBuffer.put(floatArr)
         } else {
             // NHWC format: RGB RGB RGB...
-            val floatArr = FloatArray(INPUT_SIZE * INPUT_SIZE * 3)
             var idx = 0
             for (pixel in scaledPixels) {
                 floatArr[idx++] = norm[(pixel shr 16) and 0xFF]
                 floatArr[idx++] = norm[(pixel shr 8) and 0xFF]
                 floatArr[idx++] = norm[pixel and 0xFF]
             }
-            inputFloatBuffer.put(floatArr)
         }
+        inputFloatBuffer.put(floatArr)
         inputBuffer.rewind()
 
         outputBuffer.rewind()
         interpreter.run(inputBuffer, outputBuffer)
         outputFloatBuffer.rewind()
 
-        val timestampMs = System.currentTimeMillis()
         return parseOutput(timestampMs)
     }
 
@@ -244,9 +335,9 @@ class TfliteDetector(
             )
         }
 
-        return applyNms(candidates)
-            .sortedByDescending { it.confidence }
-            .take(settings.maxObjects)
+        // NOTE: no `take(maxObjects)` here — callers apply the global cap, and the
+        // sliced path must see every tile's survivors before fused NMS.
+        return applyNms(candidates).sortedByDescending { it.confidence }
     }
 
     // ── NMS ───────────────────────────────────────────────────────────────────
@@ -310,5 +401,9 @@ class TfliteDetector(
             android.util.Log.w("TfliteDetector", "Error closing GPU delegate", e)
         }
         gpuDelegate = null
+
+        tileBitmap?.takeIf { !it.isRecycled }?.recycle()
+        tileBitmap = null
+        tileCanvas = null
     }
 }
