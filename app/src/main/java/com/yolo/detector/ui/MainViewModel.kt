@@ -3,6 +3,7 @@ package com.yolo.detector.ui
 import android.app.Application
 import android.content.ContentValues
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
@@ -120,6 +121,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var lastFrameMs: Long = 0L
     private var smoothedFps: Float = 0f
 
+    /**
+     * Requested video-recording frame rate, or 0 when not recording. Pushed into
+     * every created CameraManager (and re-applied live) so raw frames are emitted
+     * in NORMAL mode while a recording is active.
+     */
+    @Volatile private var recordingFps: Int = 0
+
     private var boundLifecycleOwner: LifecycleOwner? = null
     private var boundPreviewView: PreviewView? = null
 
@@ -182,6 +190,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     private fun configuredManager(settings: InferenceSettings): CameraManager {
         val mgr = CameraManager(getApplication(), settings, detector!!, tracker)
+        mgr.recordingFps = recordingFps
         mgr.onAlert = ::dispatchAlert
         mgr.updateAlertSettings(
             enabled = cachedEmailSettings.enabled,
@@ -465,6 +474,64 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Adjusts the frame-emission rate the live camera used while recording a
+     * video ([recordingFps], 0 = stop). Safe to call from the main thread.
+     */
+    fun setRecordingFps(fps: Int) {
+        recordingFps = fps.coerceIn(0, 60)
+        cameraManager?.recordingFps = recordingFps
+    }
+
+    /**
+     * Creates a placeholder MP4 entry in the public MediaStore (Movies/YOLO)
+     * marked pending. The caller writes the encoded file stream to the returned
+     * URI's FileDescriptor, then calls [commitVideoOutput] to finalize (or
+     * discard) the entry. Returns null on failure.
+     */
+    fun createVideoUri(): Uri? {
+        return runCatching {
+            val filename = "YOLO_${System.currentTimeMillis()}.mp4"
+            val resolver = getApplication<Application>().contentResolver
+
+            val contentValues = ContentValues().apply {
+                put(MediaStore.Video.Media.DISPLAY_NAME, filename)
+                put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/YOLO")
+                    put(MediaStore.Video.Media.IS_PENDING, 1)
+                }
+            }
+            resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, contentValues)
+        }.getOrElse {
+            android.util.Log.e("MainViewModel", "Failed to create video entry", it)
+            null
+        }
+    }
+
+    /**
+     * Finalizes a pending video entry from [createVideoUri]: publishes it when
+     * [success] (clears IS_PENDING) or deletes it when the recording failed.
+     */
+    fun commitVideoOutput(uri: Uri?, success: Boolean) {
+        val target = uri ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val resolver = getApplication<Application>().contentResolver
+                if (success) {
+                    val values = ContentValues().apply {
+                        put(MediaStore.Video.Media.IS_PENDING, 0)
+                    }
+                    resolver.update(target, values, null, null)
+                } else {
+                    resolver.delete(target, null, null)
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("MainViewModel", "Failed to finalize video entry", e)
+            }
+        }
+    }
+
     // ── Settings delegates ─────────────────────────────────────────────────────
 
     fun setConfidenceThreshold(v: Float) = viewModelScope.launch { settingsRepo.setConfidenceThreshold(v) }
@@ -480,6 +547,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setHeatmapDetail(v: Int)      = viewModelScope.launch { settingsRepo.setHeatmapDetail(v) }
     fun setMatrixDetail(v: Int)       = viewModelScope.launch { settingsRepo.setMatrixDetail(v) }
     fun setMatrixGamma(v: Float)      = viewModelScope.launch { settingsRepo.setMatrixGamma(v) }
+    fun setCaptureMode(mode: CaptureMode) = viewModelScope.launch { settingsRepo.setCaptureMode(mode) }
+    fun setVideoResolution(res: VideoResolution) = viewModelScope.launch { settingsRepo.setVideoResolution(res) }
+    fun setVideoFps(v: Int)           = viewModelScope.launch { settingsRepo.setVideoFps(v) }
     fun resetSettings()                  = viewModelScope.launch { settingsRepo.resetToDefaults() }
 
     // ── Email-alert settings delegates ────────────────────────────────────────

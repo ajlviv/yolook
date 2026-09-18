@@ -1,15 +1,24 @@
 package com.yolo.detector.ui.screens
 
+import android.content.res.ColorStateList
 import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.net.Uri
 import android.os.Bundle
+import android.os.SystemClock
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.Toast
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
+import com.yolo.detector.R
+import com.yolo.detector.data.CaptureMode
 import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.ViewMode
 import com.yolo.detector.databinding.FragmentLiveBinding
@@ -21,12 +30,19 @@ import com.yolo.detector.ui.applyMatrixEffect
 import com.yolo.detector.ui.applyObjectsOnlyMask
 import com.yolo.detector.ui.countByClass
 import com.yolo.detector.ui.formatCountStats
+import com.yolo.detector.video.FrameVideoRecorder
+import com.yolo.detector.video.videoBitrateFor
+import com.yolo.detector.video.videoWidthForHeight
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.currentCoroutineContext
+import java.util.Locale
 
 /**
  * Live camera fragment: shows the PreviewView, bounding-box overlay, and a stats HUD.
@@ -81,10 +97,25 @@ class LiveFragment : Fragment() {
     private var objectsOnlyWorker: Job? = null
     private var latestDetections: List<com.yolo.detector.data.Detection> = emptyList()
 
-    // Count toggle: display-only flag. When on, boxes show per-object running
-    // numbers inside them and the HUD shows this frame's per-class counts.
-    // The view mode is never touched by the toggle.
-    private var countingEnabled: Boolean = false
+    // Capture mode (photo/video) driven by the toggle above the action FAB and
+    // persisted in Settings. The action FAB snapshots in PHOTO mode and records
+    // a video (start/stop) in VIDEO mode.
+    private var currentCaptureMode: CaptureMode = CaptureMode.PHOTO
+
+    // Active video-recording state. Frames are fed to the encoder at the exact
+    // point they are displayed (commitFrame for filtered modes; the raw camera
+    // frame feed for NORMAL), so the file matches what's on screen.
+    private var videoRecorder: FrameVideoRecorder? = null
+    private var recordUri: Uri? = null
+    private var recordWidth = 0
+    private var recordHeight = 0
+    private var isRecording = false
+    private var recordingStartedAtMs = 0L
+    private var recordingTimerJob: Job? = null
+
+    // Finalizes the MP4 after the view may already be gone (navigation away
+    // while recording). Own coroutine scope so it survives onDestroyView.
+    private val finalizeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -107,6 +138,7 @@ class LiveFragment : Fragment() {
         binding.overlay.detectionView = viewModel.currentSettingsSnapshot.detectionView
         currentMode = viewModel.currentSettingsSnapshot.viewMode
         currentDetectionView = viewModel.currentSettingsSnapshot.detectionView
+        currentCaptureMode = viewModel.currentSettingsSnapshot.captureMode
         // Pre-seed the bake-quality params from the persisted snapshot so the
         // first bakes (before settingsFlow emits) already use stored values.
         val seed = viewModel.currentSettingsSnapshot
@@ -128,21 +160,25 @@ class LiveFragment : Fragment() {
             insets
         }
 
-        // FAB: capture current overlay and save snapshot
+        // Action FAB: snapshot in PHOTO mode; start/stop recording in VIDEO mode.
         binding.fabSnapshot.setOnClickListener {
-            captureAndSaveSnapshot()
+            when (currentCaptureMode) {
+                CaptureMode.PHOTO -> captureAndSaveSnapshot()
+                CaptureMode.VIDEO -> if (isRecording) stopVideoRecording() else startVideoRecording()
+            }
         }
 
-        // Count toggle above the snapshot FAB: 'D' = detect labels, 'C' = count
-        // numbers inside boxes with per-frame class counts in the HUD.
-        // Display-only switch — the view mode is left untouched.
+        // Capture-mode toggle above the action FAB: photo snapshot ↔ video
+        // recording. Icons (camera / videocam) replace the old 'D'/'C' letters.
+        // The mode itself is persisted through the ViewModel.
         binding.fabModeToggle.setOnClickListener {
-            countingEnabled = !countingEnabled
-            binding.overlay.countLabelsEnabled = countingEnabled
-            binding.fabModeToggle.text = if (countingEnabled) "C" else "D"
-            // Re-render the HUD immediately so the switch feels instant.
-            refreshCountHud()
+            viewModel.setCaptureMode(
+                if (currentCaptureMode == CaptureMode.PHOTO) CaptureMode.VIDEO else CaptureMode.PHOTO
+            )
         }
+
+        // Refresh the toggle/FAB visuals once the persisted capture mode is known.
+        applyCaptureMode()
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -155,28 +191,35 @@ class LiveFragment : Fragment() {
                         currentHeatmapDetail = settings.heatmapDetail
                         currentMatrixDetail = settings.matrixDetail
                         currentMatrixGamma = settings.matrixGamma
+                        currentCaptureMode = settings.captureMode
+                        applyCaptureMode()
                     }
                 }
                 launch {
                     viewModel.frameFlow.collect { bitmap ->
                         if (bitmap != null) {
-                            // Frame copies are only emitted while a filtered mode is
-                            // active, so the coverage overlay must be on. Keying this
-                            // off frame arrival instead of the async settingsFlow
-                            // closes the startup/switch gap where the camera is already
-                            // filtering but applyViewMode() hasn't run yet — otherwise
-                            // the raw camera feed shows through during that window.
-                            binding.imageFilterPreview.visibility = View.VISIBLE
+                            // Frame copies are emitted while a filtered mode is
+                            // active (or during recording), so the filtered preview
+                            // must be on unless we're in a plain NORMAL preview.
+                            if (currentMode != ViewMode.NORMAL) {
+                                binding.imageFilterPreview.visibility = View.VISIBLE
+                            }
                             when {
                                 currentMode == ViewMode.HEATMAP -> onHeatmapFrame(bitmap)
                                 currentMode == ViewMode.EDGE -> onEdgeFrame(bitmap)
                                 currentMode == ViewMode.MATRIX -> onMatrixFrame(bitmap)
                                 currentDetectionView == DetectionView.OBJECTS_ONLY ->
                                     onObjectsOnlyFrame(bitmap)
+                                currentMode == ViewMode.NORMAL && isRecording -> {
+                                    // Raw camera frames at the recording FPS: bake
+                                    // the overlay in so the file matches the live view.
+                                    recordFrame(bitmap)
+                                    bitmap.recycle()
+                                }
                                 currentMode == ViewMode.NORMAL -> bitmap.recycle() // camera filtered, UI not yet updated
                                 else -> commitFrame(bitmap)
                             }
-                        } else if (currentMode == ViewMode.NORMAL &&
+                        } else if (currentMode == ViewMode.NORMAL && !isRecording &&
                             currentDetectionView != DetectionView.OBJECTS_ONLY) {
                             // Camera switched back to the plain preview with no
                             // masking active: mirror it by clearing the filtered image.
@@ -213,6 +256,9 @@ class LiveFragment : Fragment() {
                             binding.tvModelError.visibility = View.GONE
                             binding.fabSnapshot.isEnabled = true
                         } else {
+                            // Without an analysing pipeline there are no frames to
+                            // record; finalize whatever was captured so far.
+                            if (isRecording) stopVideoRecording(showToast = false)
                             binding.tvModelError.visibility = View.VISIBLE
                             binding.tvModelError.text = error
                             binding.fabSnapshot.isEnabled = false
@@ -261,8 +307,6 @@ class LiveFragment : Fragment() {
         currentMode = mode
 
         // Full reset: releases the previous mode's frames and stops any bake.
-        // The count toggle is intentionally left alone — it is a Live-tab
-        // display switch, independent of the Settings view mode.
         clearDisplayedFrame()
 
         syncViewModeVisuals()
@@ -321,11 +365,12 @@ class LiveFragment : Fragment() {
     }
 
     /**
-     * Whether the HUD shows per-frame per-class counts: the Live-tab "C"
-     * toggle or Settings "Detection view" = "Box with count".
+     * Whether the HUD shows per-frame per-class counts: Settings "Detection view"
+     * = "Box with count" (the Live-tab count toggle was removed when video
+     * recording replaced it).
      */
     private fun showCountHud(): Boolean =
-        countingEnabled || currentDetectionView == DetectionView.COUNT
+        currentDetectionView == DetectionView.COUNT
 
     /**
      * Receives a heatmap-mode frame. Keeps only the newest frame (drop-oldest) and
@@ -595,6 +640,9 @@ class LiveFragment : Fragment() {
         val old = displayedBitmap
         displayedBitmap = img
         old?.recycle()
+        // Recording feeds the encoder with the exact frame being displayed, so
+        // the video matches what's on screen.
+        if (isRecording) recordFrame(img)
     }
 
     /** Releases all owned frame state and clears the filtered image view. */
@@ -642,15 +690,7 @@ class LiveFragment : Fragment() {
         // B&W / Invert are GPU color-matrix filters applied by the ImageView, so bake
         // them onto the snapshot the same way for a faithful capture. Heatmap and
         // Edge are already baked into displayedBitmap at this point.
-        val paint = when (currentMode) {
-            ViewMode.BLACK_AND_WHITE -> android.graphics.Paint().apply {
-                colorFilter = ViewModeEffects.blackAndWhiteColorFilter()
-            }
-            ViewMode.INVERT -> android.graphics.Paint().apply {
-                colorFilter = ViewModeEffects.invertColorFilter()
-            }
-            else -> null
-        }
+        val paint = viewModePaint()
 
         // Merge the bounding-box overlay over the frame.
         val merged = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
@@ -672,7 +712,212 @@ class LiveFragment : Fragment() {
         viewModel.saveSnapshot(merged)
     }
 
+    // ── Video recording ─────────────────────────────────────────────────────
+
+    /**
+     * Returns the paint that reproduces the ImageView's GPU color-matrix filter
+     * for the current view mode: B&W and Invert bake their filter into frames
+     * drawn for snapshots/recording; everything else (baked modes, NORMAL) needs
+     * no filter.
+     */
+    private fun viewModePaint(): Paint? = when (currentMode) {
+        ViewMode.BLACK_AND_WHITE -> Paint().apply {
+            colorFilter = ViewModeEffects.blackAndWhiteColorFilter()
+        }
+        ViewMode.INVERT -> Paint().apply {
+            colorFilter = ViewModeEffects.invertColorFilter()
+        }
+        else -> null
+    }
+
+    /** Starts recording "what's on screen" to an MP4 in Movies/YOLO. */
+    private fun startVideoRecording() {
+        if (isRecording || currentCaptureMode != CaptureMode.VIDEO) return
+        val snapshot = viewModel.currentSettingsSnapshot
+        val fps = snapshot.videoFps.coerceIn(1, 60)
+        val targetHeight = snapshot.videoResolution.height
+
+        val overlayW = binding.overlay.width.takeIf { it > 0 } ?: binding.previewView.width
+        val overlayH = binding.overlay.height.takeIf { it > 0 } ?: binding.previewView.height
+        if (overlayW <= 0 || overlayH <= 0) {
+            recordingStartFailed()
+            return
+        }
+        val recW = videoWidthForHeight(targetHeight, overlayW / overlayH.toFloat())
+        val recH = targetHeight
+
+        val uri = viewModel.createVideoUri()
+        if (uri == null) {
+            recordingStartFailed()
+            return
+        }
+        val pfd = runCatching { requireContext().contentResolver.openFileDescriptor(uri, "rw") }
+            .getOrNull()
+        if (pfd == null) {
+            viewModel.commitVideoOutput(uri, false)
+            recordingStartFailed()
+            return
+        }
+
+        val recorder = FrameVideoRecorder(recW, recH, fps, videoBitrateFor(recH, fps), pfd)
+        // On failure the recorder already released resources (incl. the fd).
+        if (!recorder.start()) {
+            viewModel.commitVideoOutput(uri, false)
+            recordingStartFailed()
+            return
+        }
+
+        videoRecorder = recorder
+        recordUri = uri
+        recordWidth = recW
+        recordHeight = recH
+        isRecording = true
+        viewModel.setRecordingFps(fps)
+        binding.root.keepScreenOn = true
+        updateFabVisuals()
+        startRecordingTimer()
+        // Seed the first frame so the file has content even for a quick tap.
+        presentCurrentFrameForRecording()
+    }
+
+    /** Stops recording and finalizes the MP4 on a detached scope. */
+    private fun stopVideoRecording(showToast: Boolean = true) {
+        val recorder = videoRecorder ?: return
+        val uri = recordUri
+        val ctx = context
+        videoRecorder = null
+        recordUri = null
+        isRecording = false
+        viewModel.setRecordingFps(0)
+        binding.root.keepScreenOn = false
+        stopRecordingTimer()
+        updateFabVisuals()
+
+        finalizeScope.launch {
+            val ok = recorder.stop()
+            viewModel.commitVideoOutput(uri, ok)
+            if (showToast && ctx != null) {
+                val msg = if (ok) R.string.video_recording_saved else R.string.video_recording_failed
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun recordingStartFailed() {
+        android.util.Log.w("Recording", "Video recording could not start")
+        Toast.makeText(requireContext(), R.string.video_recording_start_failed, Toast.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Bakes the current frame into the encoder. Draws [source] center-cropped to
+     * the recording bounds, applies the current view-mode filter (B&W/Invert),
+     * then draws the live overlay on top — byte-for-byte mirroring how
+     * [captureAndSaveSnapshot] captures a snapshot.
+     *
+     * [source] ownership stays with the caller (it must recycle it).
+     */
+    private fun recordFrame(source: Bitmap) {
+        val recorder = videoRecorder ?: return
+        if (recordWidth <= 0 || recordHeight <= 0) return
+        val filter = viewModePaint()
+        val presented = recorder.present { canvas ->
+            canvas.drawColor(Color.BLACK)
+            val scale = maxOf(
+                recordWidth / source.width.toFloat(),
+                recordHeight / source.height.toFloat(),
+            )
+            val dw = source.width * scale
+            val dh = source.height * scale
+            val left = (recordWidth - dw) / 2f
+            val top = (recordHeight - dh) / 2f
+            canvas.drawBitmap(source, null, RectF(left, top, left + dw, top + dh), filter)
+            binding.overlay.draw(canvas)
+        }
+        if (!presented) {
+            android.util.Log.w("Recording", "Frame dropped (encoder busy or stopping)")
+        }
+    }
+
+    /** Feeds the encoder one frame right at recording start (before the next analysis frame). */
+    private fun presentCurrentFrameForRecording() {
+        if (videoRecorder == null) return
+        val filtered = currentMode != ViewMode.NORMAL ||
+            currentDetectionView == DetectionView.OBJECTS_ONLY
+        val source = if (filtered) {
+            displayedBitmap?.copy(Bitmap.Config.ARGB_8888, true)
+        } else {
+            binding.previewView.bitmap?.copy(Bitmap.Config.ARGB_8888, true)
+        }
+        if (source != null) {
+            recordFrame(source)
+            source.recycle()
+        }
+    }
+
+    /** Keeps the toggle/FAB icons and descriptions in sync with [currentCaptureMode]. */
+    private fun applyCaptureMode() {
+        val videoMode = currentCaptureMode == CaptureMode.VIDEO
+        binding.fabModeToggle.setIconResource(
+            if (videoMode) R.drawable.ic_videocam else R.drawable.ic_photo_camera
+        )
+        binding.fabModeToggle.contentDescription = getString(
+            if (videoMode) R.string.fab_switch_photo else R.string.fab_switch_video
+        )
+        updateFabVisuals()
+    }
+
+    /** Updates the action FAB look for photo / video / recording states. */
+    private fun updateFabVisuals() {
+        val (icon, iconColor, bgColor) = when {
+            isRecording ->
+                Triple(R.drawable.ic_stop, Color.WHITE, 0xFFD32F2F.toInt())
+            currentCaptureMode == CaptureMode.VIDEO ->
+                Triple(R.drawable.ic_record, Color.WHITE, 0xFFD32F2F.toInt())
+            else ->
+                Triple(R.drawable.ic_photo_camera, Color.BLACK, 0xFF00E676.toInt())
+        }
+        binding.fabSnapshot.setImageResource(icon)
+        binding.fabSnapshot.imageTintList = ColorStateList.valueOf(iconColor)
+        binding.fabSnapshot.backgroundTintList = ColorStateList.valueOf(bgColor)
+        binding.fabSnapshot.contentDescription = getString(
+            when {
+                isRecording -> R.string.fab_stop_recording
+                currentCaptureMode == CaptureMode.VIDEO -> R.string.fab_record_video
+                else -> R.string.fab_snapshot
+            }
+        )
+    }
+
+    private fun startRecordingTimer() {
+        recordingStartedAtMs = SystemClock.elapsedRealtime()
+        recordingTimerJob?.cancel()
+        recordingTimerJob = viewLifecycleOwner.lifecycleScope.launch {
+            while (isActive) {
+                val secs = (SystemClock.elapsedRealtime() - recordingStartedAtMs) / 1000
+                binding.tvRecording.text = getString(R.string.recording_indicator, formatElapsed(secs))
+                binding.tvRecording.visibility = View.VISIBLE
+                delay(500)
+            }
+        }
+    }
+
+    private fun stopRecordingTimer() {
+        recordingTimerJob?.cancel()
+        recordingTimerJob = null
+        binding.tvRecording.visibility = View.GONE
+    }
+
+    private fun formatElapsed(totalSeconds: Long): String {
+        val m = totalSeconds / 60
+        val s = totalSeconds % 60
+        return String.format(Locale.US, "%d:%02d", m, s)
+    }
+
     override fun onDestroyView() {
+        // Finalize any in-progress recording before the camera is torn down.
+        stopVideoRecording(showToast = false)
         super.onDestroyView()
         heatmapWorker?.cancel()
         heatmapWorker = null

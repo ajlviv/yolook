@@ -22,6 +22,7 @@ import com.yolo.detector.data.COCO_LABELS
 import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.VEHICLE_CLASS_IDS
 import com.yolo.detector.data.ViewMode
+import com.yolo.detector.data.VideoResolution
 import com.yolo.detector.databinding.FragmentSettingsTabsBinding
 import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.util.snapToStep
@@ -46,6 +47,7 @@ class SettingsFragment : Fragment() {
     private lateinit var viewPage: View
     private lateinit var classesPage: View
     private lateinit var alertsPage: View
+    private lateinit var generalPage: View
 
     // Guards against the settings-flow re-sync re-triggering the checkbox
     // change listener (which would call setClassFilter → re-emit → flicker loop).
@@ -62,6 +64,10 @@ class SettingsFragment : Fragment() {
     private var currentEdgeDetailOrdinal = 2   // default detail 3 → index 2
     private var currentHeatmapDetailOrdinal = 2
 
+    // Same guard pattern for the video-quality spinners (see setVideoResolution()).
+    private var currentVideoResolutionOrdinal = VideoResolution.HD.ordinal
+    private var currentVideoFpsOrdinal = 1   // default 30 FPS → index 1
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -72,6 +78,7 @@ class SettingsFragment : Fragment() {
         viewPage = inflater.inflate(R.layout.tab_view, container, false)
         classesPage = inflater.inflate(R.layout.tab_classes, container, false)
         alertsPage = inflater.inflate(R.layout.tab_alerts, container, false)
+        generalPage = inflater.inflate(R.layout.tab_general, container, false)
         return binding.root
     }
 
@@ -84,6 +91,7 @@ class SettingsFragment : Fragment() {
         setupViewModeSpinner()
         setupDetectionViewSpinner()
         setupRenderDetailSpinners()
+        setupVideoQualitySpinners()
         setupListeners()
         setupEmailAlertListeners()
         observeSettings()
@@ -92,7 +100,7 @@ class SettingsFragment : Fragment() {
 
     private fun setupTabs() {
         val titles = resources.getStringArray(R.array.settings_tab_titles)
-        val pages = listOf(detectionPage, viewPage, classesPage, alertsPage)
+        val pages = listOf(detectionPage, viewPage, classesPage, alertsPage, generalPage)
 
         binding.viewPager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
             override fun getItemCount(): Int = pages.size
@@ -180,6 +188,44 @@ class SettingsFragment : Fragment() {
                 if (position == currentHeatmapDetailOrdinal) return
                 currentHeatmapDetailOrdinal = position
                 viewModel.setHeatmapDetail(position + 1)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) {}
+        }
+    }
+
+    private fun setupVideoQualitySpinners() {
+        val spVideoResolution = generalPage.findViewById<Spinner>(R.id.spVideoResolution)
+        val resolutions = resources.getStringArray(R.array.video_resolutions).toList()
+        spVideoResolution.adapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            resolutions,
+        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+        spVideoResolution.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                if (position == currentVideoResolutionOrdinal) return
+                currentVideoResolutionOrdinal = position
+                viewModel.setVideoResolution(VideoResolution.entries[position])
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) {}
+        }
+
+        val spVideoFps = generalPage.findViewById<Spinner>(R.id.spVideoFps)
+        val fpsList = resources.getStringArray(R.array.video_fps_list).toList()
+        spVideoFps.adapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            fpsList,
+        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+        spVideoFps.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View?, position: Int, id: Long) {
+                if (position == currentVideoFpsOrdinal) return
+                currentVideoFpsOrdinal = position
+                viewModel.setVideoFps(if (position == 0) 15 else 30)
             }
 
             override fun onNothingSelected(parent: AdapterView<*>) {}
@@ -442,6 +488,9 @@ class SettingsFragment : Fragment() {
         val sliderMatrixGamma = viewPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMatrixGamma)
         val tvMatrixGamma = viewPage.findViewById<android.widget.TextView>(R.id.tvMatrixGamma)
 
+        val spVideoResolution = generalPage.findViewById<Spinner>(R.id.spVideoResolution)
+        val spVideoFps = generalPage.findViewById<Spinner>(R.id.spVideoFps)
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 viewModel.settingsFlow.collect { settings ->
@@ -496,6 +545,12 @@ class SettingsFragment : Fragment() {
                     val snappedGamma = snapToStep(settings.matrixGamma, 0.5f, 1f, 0.01f)
                     sliderMatrixGamma.value = snappedGamma
                     tvMatrixGamma.text = "${(snappedGamma * 100).toInt()}%"
+
+                    currentVideoResolutionOrdinal = settings.videoResolution.ordinal
+                    spVideoResolution.setSelection(settings.videoResolution.ordinal)
+
+                    currentVideoFpsOrdinal = if (settings.videoFps >= 30) 1 else 0
+                    spVideoFps.setSelection(currentVideoFpsOrdinal)
                 }
             }
         }

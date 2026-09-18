@@ -103,6 +103,15 @@ class CameraManager(
         const val VIEW_FPS = 15
         const val VIEW_INTERVAL_MS: Long = 1000L / VIEW_FPS
     }
+
+    /**
+     * While > 0, frames are also emitted to [frameFlow] in NORMAL view mode at
+     * this rate (FPS). Used by video recording so the recorder gets raw frames
+     * to overlay even when no filtered view mode is active. 0 = not recording.
+     */
+    @Volatile
+    var recordingFps: Int = 0
+
     private var lastViewEmitMs: Long = 0L
 
     /**
@@ -181,10 +190,18 @@ class CameraManager(
         // Filtered view modes render from this frame feed. Give them their own
         // refresh cadence (VIEW_FPS) decoupled from the inference throttle so a
         // low "Inference FPS" setting doesn't make the Matrix/Heatmap/Edge views
-        // stutter. NORMAL mode without masking uses the smooth PreviewView.
-        val needsFrame = settings.viewMode != ViewMode.NORMAL ||
+        // stutter. While recording, NORMAL mode also needs raw frames at the
+        // recording FPS so the encoder can bake the overlay onto them.
+        val recordingActive = recordingFps > 0
+        val needsFrame = recordingActive ||
+                settings.viewMode != ViewMode.NORMAL ||
                 settings.detectionView == DetectionView.OBJECTS_ONLY
-        val viewDue = needsFrame && now - lastViewEmitMs >= VIEW_INTERVAL_MS
+        val viewIntervalMs = if (recordingActive) {
+            1000L / recordingFps.coerceIn(1, 60)
+        } else {
+            VIEW_INTERVAL_MS
+        }
+        val viewDue = needsFrame && now - lastViewEmitMs >= viewIntervalMs
         val inferenceDue = now - lastInferenceMs >= frameIntervalMs
 
         if (!viewDue && !inferenceDue) {

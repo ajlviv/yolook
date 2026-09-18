@@ -51,6 +51,11 @@ class SettingsRepository(context: Context) {
         val HEATMAP_DETAIL = intPreferencesKey("heatmap_detail")
         val MATRIX_DETAIL = intPreferencesKey("matrix_detail")
         val MATRIX_GAMMA = floatPreferencesKey("matrix_gamma")
+        // Stored as the enum name, e.g. "VIDEO"
+        val CAPTURE_MODE = stringPreferencesKey("capture_mode")
+        // Stored as the enum name, e.g. "HD"
+        val VIDEO_RESOLUTION = stringPreferencesKey("video_resolution")
+        val VIDEO_FPS = intPreferencesKey("video_fps")
     }
 
     // ── Read ─────────────────────────────────────────────────────────────────
@@ -84,8 +89,17 @@ class SettingsRepository(context: Context) {
             heatmapDetail = this[Keys.HEATMAP_DETAIL] ?: 3,
             matrixDetail = this[Keys.MATRIX_DETAIL] ?: 8,
             matrixGamma = snapToStep(this[Keys.MATRIX_GAMMA] ?: 0.74f, 0.5f, 1f, 0.01f),
+            captureMode = this[Keys.CAPTURE_MODE]?.toCaptureMode() ?: CaptureMode.PHOTO,
+            videoResolution = this[Keys.VIDEO_RESOLUTION]?.toVideoResolution() ?: VideoResolution.HD,
+            videoFps = (this[Keys.VIDEO_FPS] ?: 30).coerceIn(15, 30),
         )
     }
+
+    private fun String.toCaptureMode(): CaptureMode =
+        CaptureMode.entries.firstOrNull { it.name == this } ?: CaptureMode.PHOTO
+
+    private fun String.toVideoResolution(): VideoResolution =
+        VideoResolution.entries.firstOrNull { it.name == this } ?: VideoResolution.HD
 
     private fun String.toViewMode(): ViewMode =
         ViewMode.entries.firstOrNull { it.name == this } ?: ViewMode.NORMAL
@@ -146,6 +160,18 @@ class SettingsRepository(context: Context) {
     suspend fun setMatrixGamma(value: Float) {
         val snapped = snapToStep(value, 0.5f, 1f, 0.01f)
         dataStore.edit { it[Keys.MATRIX_GAMMA] = snapped }
+    }
+
+    suspend fun setCaptureMode(mode: CaptureMode) {
+        dataStore.edit { it[Keys.CAPTURE_MODE] = mode.name }
+    }
+
+    suspend fun setVideoResolution(resolution: VideoResolution) {
+        dataStore.edit { it[Keys.VIDEO_RESOLUTION] = resolution.name }
+    }
+
+    suspend fun setVideoFps(value: Int) {
+        dataStore.edit { it[Keys.VIDEO_FPS] = value.coerceIn(15, 30) }
     }
 
     /** Resets all settings to factory defaults by clearing the DataStore. */

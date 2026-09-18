@@ -73,8 +73,8 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/tvStats" />
 
-    <!-- Count toggle: 'D' = detect labels, 'C' = count numbers inside boxes.
-         Toggles object counting only; the view mode is untouched. Docked above the snapshot FAB. -->
+    <!-- Capture-mode toggle: photo snapshot ↔ video recording. Icons replace the
+         old 'D'/'C' letters. Docked above the action FAB. -->
     <com.google.android.material.button.MaterialButton
         android:id="@+id/fabModeToggle"
         android:layout_width="56dp"
@@ -82,20 +82,38 @@
         android:layout_marginStart="24dp"
         android:layout_marginEnd="24dp"
         android:layout_marginBottom="16dp"
-        android:contentDescription="@string/fab_toggle_mode"
+        android:contentDescription="@string/fab_switch_video"
+        android:gravity="center"
         android:insetLeft="0dp"
         android:insetTop="0dp"
         android:insetRight="0dp"
         android:insetBottom="0dp"
-        android:text="D"
-        android:textSize="22sp"
         app:backgroundTint="#212121"
         app:cornerRadius="28dp"
+        app:icon="@drawable/ic_photo_camera"
+        app:iconSize="26dp"
+        app:iconTint="#00E676"
         app:layout_constraintBottom_toTopOf="@id/fabSnapshot"
         app:layout_constraintEnd_toEndOf="parent"
         app:strokeColor="#00E676"
-        app:strokeWidth="2dp"
-        android:textColor="#00E676" />
+        app:strokeWidth="2dp" />
+
+    <!-- Recording indicator: visible only while a video is being recorded. -->
+    <TextView
+        android:id="@+id/tvRecording"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="12dp"
+        android:background="#80000000"
+        android:paddingHorizontal="10dp"
+        android:paddingVertical="4dp"
+        android:textColor="#FF5252"
+        android:textSize="13sp"
+        android:textStyle="bold"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/fabModeToggle"
+        app:layout_constraintEnd_toEndOf="parent" />
 
     <com.google.android.material.floatingactionbutton.FloatingActionButton
         android:id="@+id/fabSnapshot"

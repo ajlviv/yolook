@@ -60,4 +60,18 @@ data class InferenceSettings(
 
     /** Matrix shadow brightness gamma in [0.5, 1.0]: lower = brighter shadows. */
     val matrixGamma: Float = 0.74f,
+
+    // ── Capture (photo snapshot / video recording) ─────────────────────────
+
+    /** What the Live-tab action button does: photo snapshot or video recording. */
+    val captureMode: CaptureMode = CaptureMode.PHOTO,
+
+    /**
+     * Recorded-video output height in pixels ([VideoResolution.height]); the
+     * width follows the screen aspect so the file matches the live view.
+     */
+    val videoResolution: VideoResolution = VideoResolution.HD,
+
+    /** Recorded-video frame rate in [15, 30] FPS. */
+    val videoFps: Int = 30,
 )

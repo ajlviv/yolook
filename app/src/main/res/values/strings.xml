@@ -5,7 +5,11 @@
     <string name="nav_history">History</string>
     <string name="nav_settings">Settings</string>
     <string name="fab_snapshot">Take snapshot</string>
-    <string name="fab_toggle_mode">Toggle count mode</string>
+    <string name="fab_switch_video">Switch to video capture</string>
+    <string name="fab_switch_photo">Switch to photo snapshot</string>
+    <string name="fab_record_video">Start recording video</string>
+    <string name="fab_stop_recording">Stop recording</string>
+    <string name="recording_indicator">● REC %1$s</string>
     <string name="history_empty">No history yet</string>
     <string name="history_clear">Clear history</string>
     <string name="history_alert_sent">Alert sent · %1$s</string>
@@ -14,11 +18,13 @@
     <string name="settings_tab_view">View</string>
     <string name="settings_tab_classes">Classes</string>
     <string name="settings_tab_alerts">Alerts</string>
+    <string name="settings_tab_general">General</string>
     <string-array name="settings_tab_titles">
         <item>@string/settings_tab_detection</item>
         <item>@string/settings_tab_view</item>
         <item>@string/settings_tab_classes</item>
         <item>@string/settings_tab_alerts</item>
+        <item>@string/settings_tab_general</item>
     </string-array>
     <string name="settings_conf_threshold">Confidence threshold</string>
     <string name="settings_iou_threshold">IoU threshold</string>
@@ -72,6 +78,26 @@
     <string name="permission_rationale">Camera permission is required to run the live detector.</string>
     <string name="snapshot_saved">Snapshot saved to gallery</string>
     <string name="snapshot_failed">Failed to save snapshot</string>
+    <string name="video_recording_saved">Video saved to gallery</string>
+    <string name="video_recording_failed">Failed to save video</string>
+    <string name="video_recording_start_failed">Could not start recording</string>
+    <string name="settings_video_quality">Video recording</string>
+    <string name="settings_video_resolution">Resolution</string>
+    <string name="video_resolution_sd">480p (SD)</string>
+    <string name="video_resolution_hd">720p (HD)</string>
+    <string name="video_resolution_fhd">1080p (FHD)</string>
+    <string-array name="video_resolutions">
+        <item>@string/video_resolution_sd</item>
+        <item>@string/video_resolution_hd</item>
+        <item>@string/video_resolution_fhd</item>
+    </string-array>
+    <string name="settings_video_fps">Frame rate</string>
+    <string name="video_fps_15">15 FPS</string>
+    <string name="video_fps_30">30 FPS</string>
+    <string-array name="video_fps_list">
+        <item>@string/video_fps_15</item>
+        <item>@string/video_fps_30</item>
+    </string-array>
     <string name="model_missing">Missing yolov8m.tflite in app assets. Export the model and copy it to app/src/main/assets, then rebuild. See that folder\'s README.</string>
     <string name="model_load_failed">Failed to load the detector model: %1$s</string>
 
