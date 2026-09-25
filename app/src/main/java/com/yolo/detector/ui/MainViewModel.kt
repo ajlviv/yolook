@@ -484,6 +484,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setClassFilter(ids: Set<Int>)    = viewModelScope.launch { settingsRepo.setClassFilter(ids) }
     fun setViewMode(mode: ViewMode)      = viewModelScope.launch { settingsRepo.setViewMode(mode) }
     fun setDetectionView(view: DetectionView) = viewModelScope.launch { settingsRepo.setDetectionView(view) }
+    fun setMonitoringMode(v: Boolean)      = viewModelScope.launch { settingsRepo.setMonitoringMode(v) }
     fun setEdgeThreshold(v: Int)      = viewModelScope.launch { settingsRepo.setEdgeThreshold(v) }
     fun setEdgeDetail(v: Int)         = viewModelScope.launch { settingsRepo.setEdgeDetail(v) }
     fun setHeatmapDetail(v: Int)      = viewModelScope.launch { settingsRepo.setHeatmapDetail(v) }

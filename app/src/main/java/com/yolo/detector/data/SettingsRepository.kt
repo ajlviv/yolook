@@ -47,6 +47,7 @@ class SettingsRepository(context: Context) {
         val VIEW_MODE = stringPreferencesKey("view_mode")
         // Stored as the enum name, e.g. "COUNT"
         val DETECTION_VIEW = stringPreferencesKey("detection_view")
+        val MONITORING_MODE = booleanPreferencesKey("monitoring_mode")
         val EDGE_THRESHOLD = intPreferencesKey("edge_threshold")
         val EDGE_DETAIL = intPreferencesKey("edge_detail")
         val HEATMAP_DETAIL = intPreferencesKey("heatmap_detail")
@@ -81,6 +82,7 @@ class SettingsRepository(context: Context) {
             classFilter = filterIds,
             viewMode = this[Keys.VIEW_MODE]?.toViewMode() ?: ViewMode.NORMAL,
             detectionView = this[Keys.DETECTION_VIEW]?.toDetectionView() ?: DetectionView.LABELS,
+            monitoringMode = this[Keys.MONITORING_MODE] ?: false,
             edgeThreshold = this[Keys.EDGE_THRESHOLD] ?: 100,
             edgeDetail = this[Keys.EDGE_DETAIL] ?: 3,
             heatmapDetail = this[Keys.HEATMAP_DETAIL] ?: 3,
@@ -131,6 +133,10 @@ class SettingsRepository(context: Context) {
 
     suspend fun setDetectionView(view: DetectionView) {
         dataStore.edit { it[Keys.DETECTION_VIEW] = view.name }
+    }
+
+    suspend fun setMonitoringMode(value: Boolean) {
+        dataStore.edit { it[Keys.MONITORING_MODE] = value }
     }
 
     suspend fun setEdgeThreshold(value: Int) {

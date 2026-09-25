@@ -86,6 +86,9 @@ class LiveFragment : Fragment() {
     // The view mode is never touched by the toggle.
     private var countingEnabled: Boolean = false
 
+    // Monitoring mode: latest persisted value driving the quick-toggle button visuals.
+    private var currentMonitoringActive: Boolean = false
+
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -119,6 +122,10 @@ class LiveFragment : Fragment() {
         currentMatrixDetail = seed.matrixDetail
         currentMatrixGamma = seed.matrixGamma
 
+        // Pre-seed the monitoring quick toggle before the async collector emits.
+        currentMonitoringActive = seed.monitoringMode
+        syncMonitoringToggle(currentMonitoringActive)
+
         // Bind camera to this fragment's lifecycle; preview goes into the PreviewView.
         viewModel.bindCamera(viewLifecycleOwner, binding.previewView)
 
@@ -147,6 +154,12 @@ class LiveFragment : Fragment() {
             refreshCountHud()
         }
 
+        // Monitoring quick toggle: one-tap dimmed keep-screen-on, backed by the same
+        // persisted setting as the Settings → View switch. Syncs from settingsFlow below.
+        binding.fabMonitoring.setOnClickListener {
+            viewModel.setMonitoringMode(!currentMonitoringActive)
+        }
+
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 launch {
@@ -158,6 +171,8 @@ class LiveFragment : Fragment() {
                         currentHeatmapDetail = settings.heatmapDetail
                         currentMatrixDetail = settings.matrixDetail
                         currentMatrixGamma = settings.matrixGamma
+                        currentMonitoringActive = settings.monitoringMode
+                        syncMonitoringToggle(currentMonitoringActive)
                     }
                 }
                 launch {
@@ -334,6 +349,15 @@ class LiveFragment : Fragment() {
      */
     private fun showCountHud(): Boolean =
         countingEnabled || currentDetectionView == DetectionView.COUNT
+
+    /** Reflects the persisted monitoring-mode state on the quick-toggle button. */
+    private fun syncMonitoringToggle(active: Boolean) {
+        val green = android.graphics.Color.parseColor("#00E676")
+        val inactiveBg = android.graphics.Color.parseColor("#212121")
+        binding.fabMonitoring.backgroundTintList =
+            android.content.res.ColorStateList.valueOf(if (active) green else inactiveBg)
+        binding.fabMonitoring.setTextColor(if (active) android.graphics.Color.BLACK else green)
+    }
 
     /**
      * Receives a heatmap-mode frame. Keeps only the newest frame (drop-oldest) and

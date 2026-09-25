@@ -326,6 +326,11 @@ class SettingsFragment : Fragment() {
                 viewModel.setMatrixGamma(snapped)
             }
         }
+
+        viewPage.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchMonitoring)
+            .setOnCheckedChangeListener { _, isChecked ->
+                viewModel.setMonitoringMode(isChecked)
+            }
     }
 
     private fun setupEmailAlertListeners() {
@@ -447,6 +452,7 @@ class SettingsFragment : Fragment() {
         val tvMatrixDetail = viewPage.findViewById<android.widget.TextView>(R.id.tvMatrixDetail)
         val sliderMatrixGamma = viewPage.findViewById<com.google.android.material.slider.Slider>(R.id.sliderMatrixGamma)
         val tvMatrixGamma = viewPage.findViewById<android.widget.TextView>(R.id.tvMatrixGamma)
+        val switchMonitoring = viewPage.findViewById<com.google.android.material.switchmaterial.SwitchMaterial>(R.id.switchMonitoring)
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
@@ -503,6 +509,8 @@ class SettingsFragment : Fragment() {
                     val snappedGamma = snapToStep(settings.matrixGamma, 0.5f, 1f, 0.01f)
                     sliderMatrixGamma.value = snappedGamma
                     tvMatrixGamma.text = "${(snappedGamma * 100).toInt()}%"
+
+                    switchMonitoring.isChecked = settings.monitoringMode
                 }
             }
         }

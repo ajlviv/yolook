@@ -39,6 +39,13 @@ data class InferenceSettings(
     /** How detections are drawn on the live overlay and frame. */
     val detectionView: DetectionView = DetectionView.LABELS,
 
+    /**
+     * Monitoring mode: keeps the screen awake and dims brightness to a minimum so
+     * detection and alerts keep running on a left-open device. Applies app-wide
+     * regardless of the active tab.
+     */
+    val monitoringMode: Boolean = false,
+
     // ── Per-view-mode rendering quality ────────────────────────────────────
 
     /**

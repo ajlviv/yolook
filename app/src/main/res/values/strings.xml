@@ -6,6 +6,7 @@
     <string name="nav_settings">Settings</string>
     <string name="fab_snapshot">Take snapshot</string>
     <string name="fab_toggle_mode">Toggle count mode</string>
+    <string name="fab_toggle_monitoring">Toggle monitoring mode</string>
     <string name="history_empty">No history yet</string>
     <string name="history_clear">Clear history</string>
     <string name="history_alert_sent">Alert sent · %1$s</string>
@@ -30,6 +31,8 @@
     <string name="settings_class_filter">Class filter</string>
     <string name="settings_select_all">Select all</string>
     <string name="settings_view_mode">View mode</string>
+    <string name="settings_monitoring_mode">Monitoring mode (keep screen on)</string>
+    <string name="settings_monitoring_mode_hint">Keeps the screen awake and dimmed to minimum brightness so detection and email alerts keep running unattended.</string>
     <string name="settings_detection_view">Detection view</string>
     <string name="detection_view_labels">Default (box with class name)</string>
     <string name="detection_view_box_only">Box only</string>
