@@ -204,6 +204,26 @@
                 app:trackColorActive="#00E676" />
         </LinearLayout>
 
+        <!-- Monitoring Mode: app-wide screen-on + dim toggle -->
+        <com.google.android.material.switchmaterial.SwitchMaterial
+            android:id="@+id/switchMonitoring"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/settings_monitoring_mode"
+            android:textColor="#FFFFFF"
+            app:thumbTint="#00E676"
+            app:trackTint="#3300E676" />
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="16dp"
+            android:layout_marginTop="4dp"
+            android:layout_marginEnd="16dp"
+            android:text="@string/settings_monitoring_mode_hint"
+            android:textColor="#80FFFFFF"
+            android:textSize="12sp" />
+
     </LinearLayout>
 
 </ScrollView>
