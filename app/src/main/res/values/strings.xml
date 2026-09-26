@@ -22,12 +22,13 @@
         <item>@string/settings_tab_alerts</item>
     </string-array>
     <string name="settings_conf_threshold">Confidence threshold</string>
+    <string name="settings_model">Model</string>
     <string name="settings_iou_threshold">IoU threshold</string>
     <string name="settings_max_objects">Max objects per frame</string>
     <string name="settings_inference_fps">Inference FPS cap</string>
     <string name="settings_gpu_delegate">Use GPU delegate</string>
     <string name="settings_sliced_inference">Sliced detection (SAHI-style)</string>
-    <string name="settings_sliced_inference_hint">Tiles the frame into overlapping 640×640 crops to find small objects. Improves accuracy at ~6× the inference cost.</string>
+    <string name="settings_sliced_inference_hint">Tiles the frame into overlapping model-sized crops to find small objects. Improves accuracy at ~6× the inference cost.</string>
     <string name="settings_class_filter">Class filter</string>
     <string name="settings_select_all">Select all</string>
     <string name="settings_view_mode">View mode</string>
@@ -77,7 +78,7 @@
     <string name="permission_rationale">Camera permission is required to run the live detector.</string>
     <string name="snapshot_saved">Snapshot saved to gallery</string>
     <string name="snapshot_failed">Failed to save snapshot</string>
-    <string name="model_missing">Missing yolov8m.tflite in app assets. Export the model and copy it to app/src/main/assets, then rebuild. See that folder\'s README.</string>
+    <string name="model_missing">Missing a supported detection model in app assets. Export the model and copy it to app/src/main/assets, then rebuild. See that folder\'s README.</string>
     <string name="model_load_failed">Failed to load the detector model: %1$s</string>
 
     <!-- Email alerts -->

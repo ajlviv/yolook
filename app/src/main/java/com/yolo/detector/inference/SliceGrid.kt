@@ -53,8 +53,8 @@ object SliceGrid {
     }
 
     /**
-     * Maps a tile-local box (normalised to the [tileSize] crop, i.e. the model's
-     * 640×640 input) back onto normalized frame coordinates.
+     * Maps a tile-local box (normalised to the [tileSize] crop, i.e. the model-sized
+     * input) back onto normalized frame coordinates.
      */
     fun mapToFrame(tile: Tile, frameWidth: Int, frameHeight: Int, box: Box): Box {
         val scaleX = tile.width.toFloat() / frameWidth

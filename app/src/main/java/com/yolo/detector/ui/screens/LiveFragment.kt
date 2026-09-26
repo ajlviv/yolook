@@ -13,6 +13,7 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.ViewMode
 import com.yolo.detector.databinding.FragmentLiveBinding
+import com.yolo.detector.inference.ModelProfile
 import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.ui.ViewModeEffects
 import com.yolo.detector.ui.applyEdgeDetection
@@ -108,6 +109,7 @@ class LiveFragment : Fragment() {
         // settingsFlow emits — visible as a flicker when OBJECTS_ONLY
         // (or any non-default detection view) is persisted.
         binding.overlay.detectionView = viewModel.currentSettingsSnapshot.detectionView
+        binding.overlay.labels = viewModel.activeLabels
         currentMode = viewModel.currentSettingsSnapshot.viewMode
         currentDetectionView = viewModel.currentSettingsSnapshot.detectionView
         // Crop alignment depends on the camera frame aspect; seed it before the
@@ -207,6 +209,14 @@ class LiveFragment : Fragment() {
                     viewModel.detectionFlow.collect { detections ->
                         binding.overlay.setDetections(detections)
                         latestDetections = detections
+                        if (showCountHud()) refreshCountHud()
+                    }
+                }
+                launch {
+                    // Class IDs belong to the active model's label space, so the
+                    // overlay's vocabulary follows the profile, not a fixed list.
+                    viewModel.activeProfile.collect { profile ->
+                        binding.overlay.labels = profile.labels
                         if (showCountHud()) refreshCountHud()
                     }
                 }
@@ -434,7 +444,12 @@ class LiveFragment : Fragment() {
      */
     private fun refreshCountHud() {
         if (!showCountHud()) return
-        binding.tvStats.text = formatCountStats(lastStatsFps, lastStatsMs, countByClass(latestDetections))
+        binding.tvStats.text = formatCountStats(
+            lastStatsFps,
+            lastStatsMs,
+            countByClass(latestDetections),
+            viewModel.activeLabels,
+        )
     }
 
     /**

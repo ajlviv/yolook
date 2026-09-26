@@ -9,6 +9,7 @@ import android.widget.ArrayAdapter
 import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.Spinner
+import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
@@ -18,11 +19,12 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.tabs.TabLayoutMediator
 import com.yolo.detector.R
-import com.yolo.detector.data.COCO_LABELS
 import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.VEHICLE_CLASS_IDS
 import com.yolo.detector.data.ViewMode
 import com.yolo.detector.databinding.FragmentSettingsTabsBinding
+import com.yolo.detector.inference.ModelProfile
+import com.yolo.detector.inference.ModelTask
 import com.yolo.detector.ui.MainViewModel
 import com.yolo.detector.util.snapToStep
 import kotlinx.coroutines.flow.combine
@@ -80,7 +82,8 @@ class SettingsFragment : Fragment() {
 
         displayAppVersion()
         setupTabs()
-        setupClassFilterCheckboxes()
+        setupModelSpinner()
+        setupClassFilterCheckboxes(viewModel.activeLabels)
         setupViewModeSpinner()
         setupDetectionViewSpinner()
         setupRenderDetailSpinners()
@@ -197,11 +200,12 @@ class SettingsFragment : Fragment() {
         binding.tvAppVersion.text = versionText
     }
 
-    private fun setupClassFilterCheckboxes() {
+    private fun setupClassFilterCheckboxes(labels: List<String>) {
         val container = classesPage.findViewById<LinearLayout>(R.id.layoutClassFilters)
         container.removeAllViews()
+        classCheckBoxes.clear()
 
-        COCO_LABELS.forEachIndexed { index, label ->
+        labels.forEachIndexed { index, label ->
             val checkBox = CheckBox(requireContext()).apply {
                 text = "$label (id: $index)"
                 // Self-contained button drawable: gray outline unchecked, solid
@@ -218,6 +222,87 @@ class SettingsFragment : Fragment() {
             classCheckBoxes[index] = checkBox
             container.addView(checkBox)
         }
+    }
+
+    /**
+     * Populates the model picker from the profiles actually packaged in this build.
+     *
+     * The list is intentionally explicit: registering a second model must never
+     * silently take over the running one, so switching is always a user action.
+     */
+    private fun setupModelSpinner() {
+        val spModel = detectionPage.findViewById<Spinner>(R.id.spModel)
+        val tvModelDetail = detectionPage.findViewById<TextView>(R.id.tvModelDetail)
+
+        val profiles = viewModel.availableProfiles.value
+        val entries = profiles.map { it.id to describe(it) }
+        val ids = profiles.map { it.id }
+
+        modelSpinnerLabels.clear()
+        modelSpinnerLabels.addAll(entries.map { it.first })
+
+        spModel.adapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            entries.map { it.first },
+        ).apply { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+        fun renderDetail(profileId: String?) {
+            val profile = profiles.firstOrNull { it.id == profileId } ?: return
+            tvModelDetail.text = describe(profile)
+        }
+
+        // A freshly adapted Spinner rests at position 0 and fires onItemSelected as
+        // soon as it is laid out. Without preselecting the active model first, that
+        // callback reports "yolo11n-coco" and the handler below writes it back to
+        // storage, silently reverting the selection every time this screen opens.
+        val activeIndex = ids.indexOf(viewModel.activeProfile.value.id).coerceAtLeast(0)
+        syncingModelSpinner = true
+        spModel.setSelection(activeIndex, false)
+        syncingModelSpinner = false
+        renderDetail(viewModel.activeProfile.value.id)
+
+        spModel.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val selected = ids.getOrNull(position) ?: return
+                renderDetail(selected)
+                if (syncingModelSpinner) return
+                if (selected == viewModel.currentSettingsSnapshot.modelProfileId) return
+                viewModel.setModelProfile(selected)
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+    }
+
+    /**
+     * True while the model spinner is being positioned from state rather than by the
+     * user, so the resulting [AdapterView.OnItemSelectedListener] callback does not
+     * write the value it was just handed back to storage.
+     */
+    private var syncingModelSpinner = false
+
+    /** Points the model spinner at [profileId] without writing to storage. */
+    private fun syncModelSpinner(profileId: String) {
+        val spinner = view?.findViewById<android.widget.Spinner>(R.id.spModel) ?: return
+        val labels = modelSpinnerLabels
+        val index = labels.indexOf(profileId)
+        if (index < 0 || spinner.selectedItemPosition == index) return
+        syncingModelSpinner = true
+        spinner.setSelection(index, false)
+        syncingModelSpinner = false
+    }
+
+    /** Spinner entry labels, in adapter order; paired with [syncModelSpinner]. */
+    private val modelSpinnerLabels = mutableListOf<String>()
+
+    /** Every class ID the active model declares, as the "select all" target. */
+    private fun allClassIds(): Set<Int> = (0 until viewModel.activeLabels.size).toSet()
+
+    private fun describe(profile: ModelProfile): String {
+        val task = if (profile.task == ModelTask.SEGMENTATION) "segmentation" else "detection"
+        val recommended = (profile.recommendedConfidenceThreshold * 100).toInt()
+        return "$task · ${profile.numClasses} classes · ${profile.inputSize}px · conf ≥$recommended%"
     }
 
     private fun setupListeners() {
@@ -281,13 +366,13 @@ class SettingsFragment : Fragment() {
         }
 
         classesPage.findViewById<android.widget.Button>(R.id.btnSelectAllClasses).setOnClickListener {
-            viewModel.setClassFilter(COCO_LABELS.indices.toSet())
+            viewModel.setClassFilter(allClassIds())
         }
 
         val cbAllClasses = classesPage.findViewById<CheckBox>(R.id.cbAllClasses)
         cbAllClasses.setOnCheckedChangeListener { _, checked ->
             if (syncingFromSettings) return@setOnCheckedChangeListener
-            viewModel.setClassFilter(if (checked) COCO_LABELS.indices.toSet() else emptySet())
+            viewModel.setClassFilter(if (checked) allClassIds() else emptySet())
         }
 
         alertsPage.findViewById<android.widget.Button>(R.id.btnResetDefaults).setOnClickListener {
@@ -456,7 +541,24 @@ class SettingsFragment : Fragment() {
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.settingsFlow.collect { settings ->
+                // The class tab is built from the active model's vocabulary, so a model
+                // switch has to rebuild the checkboxes before syncing the filter.
+                launch {
+                    viewModel.activeProfile.collect { profile ->
+                        syncModelSpinner(profile.id)
+                        setupClassFilterCheckboxes(profile.labels)
+                        // COCO-only shortcut: a model with no vehicle classes has nothing
+                        // for "Vehicles only" to select.
+                        classesPage.findViewById<View>(R.id.btnSelectVehiclesOnly).visibility =
+                            if (VEHICLE_CLASS_IDS.any { it < profile.labels.size }) {
+                                View.VISIBLE
+                            } else {
+                                View.GONE
+                            }
+                    }
+                }
+                launch {
+                    viewModel.settingsFlow.collect { settings ->
                     val snappedConfidence = snapToStep(settings.confidenceThreshold, 0.1f, 0.9f, 0.05f)
                     sliderConfidence.value = snappedConfidence
                     tvConfValue.text = "${(snappedConfidence * 100).toInt()}%"
@@ -474,11 +576,13 @@ class SettingsFragment : Fragment() {
                     switchGpu.isChecked = settings.enableGpuDelegate
                     switchSliced.isChecked = settings.slicedInference
 
+                    val numClasses = classCheckBoxes.size
+                    val activeFilter = settings.classFilterFor(numClasses)
                     syncingFromSettings = true
                     classCheckBoxes.forEach { (id, checkBox) ->
-                        checkBox.isChecked = id in settings.classFilter
+                        checkBox.isChecked = id in activeFilter
                     }
-                    cbAllClasses.isChecked = settings.classFilter.size == COCO_LABELS.size
+                    cbAllClasses.isChecked = activeFilter.size == numClasses && numClasses > 0
                     syncingFromSettings = false
 
                     currentViewModeOrdinal = settings.viewMode.ordinal
@@ -511,6 +615,7 @@ class SettingsFragment : Fragment() {
                     tvMatrixGamma.text = "${(snappedGamma * 100).toInt()}%"
 
                     switchMonitoring.isChecked = settings.monitoringMode
+                    }
                 }
             }
         }

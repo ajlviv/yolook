@@ -8,6 +8,7 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.RectF
 import android.graphics.Typeface
+import com.yolo.detector.data.COCO_LABELS
 import com.yolo.detector.data.Detection
 import com.yolo.detector.data.labelFor
 
@@ -147,11 +148,12 @@ fun formatCountStats(
     fps: Float,
     inferenceMs: Long,
     perClass: List<Pair<Int, Int>>,
+    labels: List<String> = COCO_LABELS,
 ): String {
     val objects = perClass.sumOf { it.second }
     val header = "FPS: ${"%.1f".format(fps)}  Latency: ${inferenceMs}ms  Objects: $objects"
     if (perClass.isEmpty()) return header
-    val lines = perClass.joinToString("\n") { (classId, count) -> "${labelFor(classId)}: $count" }
+    val lines = perClass.joinToString("\n") { (classId, count) -> "${labelFor(classId, labels)}: $count" }
     return "$header\n$lines"
 }
 

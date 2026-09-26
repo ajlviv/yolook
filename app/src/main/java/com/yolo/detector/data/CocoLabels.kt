@@ -3,7 +3,7 @@ package com.yolo.detector.data
 /**
  * All 80 COCO class names indexed by class ID (0–79).
  *
- * Order matches the standard COCO dataset label ordering used by YOLOv8.
+ * Order matches the standard COCO dataset label ordering used by the current model.
  */
 val COCO_LABELS: List<String> = listOf(
     "person", "bicycle", "car", "motorcycle", "airplane",
@@ -30,8 +30,8 @@ val COCO_LABELS: List<String> = listOf(
  * - 3: motorcycle
  * - 5: bus
  * - 7: truck
+ *
+ * Only meaningful for [COCO_LABELS]; the Classes tab hides the shortcut for models
+ * with a different vocabulary.
  */
 val VEHICLE_CLASS_IDS: Set<Int> = setOf(2, 3, 5, 7)
-
-/** Returns the human-readable COCO label for a class ID, or "unknown" if out of range. */
-fun labelFor(classId: Int): String = COCO_LABELS.getOrElse(classId) { "unknown" }

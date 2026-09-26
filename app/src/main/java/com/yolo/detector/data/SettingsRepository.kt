@@ -41,8 +41,12 @@ class SettingsRepository(context: Context) {
         val INFERENCE_FPS = intPreferencesKey("inference_fps")
         val GPU_ENABLED = booleanPreferencesKey("gpu_enabled")
         val SLICED_INFERENCE = booleanPreferencesKey("sliced_inference")
+        val MODEL_PROFILE_ID = stringPreferencesKey("model_profile_id")
+        // Legacy single-model filter, migrated onto the default profile on first read.
         // Stored as a comma-separated string of integers, e.g. "2,3,5,7"
         val CLASS_FILTER_IDS = stringPreferencesKey("class_filter_ids")
+        // Per-profile filters, one entry per model: "<profileId>=<id,id,id>".
+        val CLASS_FILTERS = stringSetPreferencesKey("class_filters")
         // Stored as the enum name, e.g. "HEATMAP"
         val VIEW_MODE = stringPreferencesKey("view_mode")
         // Stored as the enum name, e.g. "COUNT"
@@ -65,12 +69,20 @@ class SettingsRepository(context: Context) {
         .map { prefs -> prefs.toSettings() }
 
     private fun Preferences.toSettings(): InferenceSettings {
-        val filterIds = this[Keys.CLASS_FILTER_IDS]
-            ?.split(",")
-            ?.mapNotNull { it.trim().toIntOrNull() }
-            ?.toSet()
-            .takeIf { it?.isNotEmpty() == true }
-            ?: COCO_LABELS.indices.toSet()
+        val profileId = this[Keys.MODEL_PROFILE_ID] ?: DEFAULT_MODEL_PROFILE_ID
+
+        val filters = HashMap<String, Set<Int>>()
+        // Carries the pre-multi-model filter forward as the default profile's filter.
+        this[Keys.CLASS_FILTER_IDS]?.parseClassIds()?.takeIf { it.isNotEmpty() }?.let {
+            filters[profileId] = it
+        }
+        for (entry in this[Keys.CLASS_FILTERS].orEmpty()) {
+            val separator = entry.indexOf('=')
+            if (separator <= 0) continue
+            val ids = entry.substring(separator + 1).parseClassIds()
+            if (ids.isEmpty()) continue
+            filters[entry.substring(0, separator)] = ids
+        }
 
         return InferenceSettings(
             confidenceThreshold = this[Keys.CONF_THRESHOLD] ?: 0.35f,
@@ -79,7 +91,8 @@ class SettingsRepository(context: Context) {
             inferenceRateFps = this[Keys.INFERENCE_FPS] ?: 10,
             enableGpuDelegate = this[Keys.GPU_ENABLED] ?: true,
             slicedInference = this[Keys.SLICED_INFERENCE] ?: false,
-            classFilter = filterIds,
+            modelProfileId = profileId,
+            classFilters = filters,
             viewMode = this[Keys.VIEW_MODE]?.toViewMode() ?: ViewMode.NORMAL,
             detectionView = this[Keys.DETECTION_VIEW]?.toDetectionView() ?: DetectionView.LABELS,
             monitoringMode = this[Keys.MONITORING_MODE] ?: false,
@@ -90,6 +103,9 @@ class SettingsRepository(context: Context) {
             matrixGamma = snapToStep(this[Keys.MATRIX_GAMMA] ?: 0.74f, 0.5f, 1f, 0.01f),
         )
     }
+
+    private fun String.parseClassIds(): Set<Int> =
+        split(",").mapNotNull { it.trim().toIntOrNull() }.toSet()
 
     private fun String.toViewMode(): ViewMode =
         ViewMode.entries.firstOrNull { it.name == this } ?: ViewMode.NORMAL
@@ -123,8 +139,16 @@ class SettingsRepository(context: Context) {
         dataStore.edit { it[Keys.SLICED_INFERENCE] = value }
     }
 
-    suspend fun setClassFilter(ids: Set<Int>) {
-        dataStore.edit { it[Keys.CLASS_FILTER_IDS] = ids.joinToString(",") }
+    suspend fun setModelProfileId(value: String) {
+        dataStore.edit { it[Keys.MODEL_PROFILE_ID] = value }
+    }
+
+    /** Stores [ids] as the class filter for [profileId], leaving other profiles untouched. */
+    suspend fun setClassFilter(profileId: String, ids: Set<Int>) {
+        dataStore.edit { prefs ->
+            val entry = "$profileId=${ids.sorted().joinToString(",")}"
+            prefs[Keys.CLASS_FILTERS] = prefs[Keys.CLASS_FILTERS].orEmpty() + entry
+        }
     }
 
     suspend fun setViewMode(mode: ViewMode) {

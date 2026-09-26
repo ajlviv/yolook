@@ -30,7 +30,7 @@ fun ImageProxy.toRgbBitmap(): Bitmap {
  *
  * Pixel values are normalised to [0, 1] (divide by 255).
  *
- * @param inputSize Target square size (640 for YOLOv8m).
+ * @param inputSize Target square size for the active model profile.
  * @return Direct ByteBuffer containing [inputSize × inputSize × 3 × 4] bytes.
  */
 fun Bitmap.toByteBuffer(inputSize: Int): ByteBuffer {

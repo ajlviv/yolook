@@ -16,22 +16,30 @@ data class InferenceSettings(
     /** Target inference rate. Analysis frames are skipped to enforce this cap. Range [1, 30]. */
     val inferenceRateFps: Int = 10,
 
-    /** Whether to attempt GPU delegate acceleration (falls back to NNAPI, then CPU). */
+    /** Whether to attempt GPU delegate acceleration (falls back to the CPU). */
     val enableGpuDelegate: Boolean = true,
 
     /**
-     * SAHI-style sliced detection: tiles the frame into overlapping 640×640 crops,
+     * SAHI-style sliced detection: tiles the frame into overlapping model-sized crops,
      * detects each at full input resolution, and fuses the results. Improves
      * small/distant-object recall but multiplies inference cost (~6× on a
      * 1280×720 feed). Default off; use only when accuracy matters more than FPS.
      */
     val slicedInference: Boolean = false,
 
+    /** Id of the [com.yolo.detector.inference.ModelProfile] to run. */
+    val modelProfileId: String = DEFAULT_MODEL_PROFILE_ID,
+
     /**
-     * Set of COCO class IDs whose detections are rendered and tracked.
-     * Defaults to all 80 COCO classes.
+     * Class IDs whose detections are rendered and tracked, keyed by
+     * [modelProfileId].
+     *
+     * Class IDs are only meaningful inside one model's label space, so a filter
+     * cannot be shared across models: profile A's ID 0 says nothing about profile
+     * B's ID 0. Each profile falls back to all of *its own* classes until the user
+     * narrows it, and its choice is remembered across model switches.
      */
-    val classFilter: Set<Int> = COCO_LABELS.indices.toSet(),
+    val classFilters: Map<String, Set<Int>> = emptyMap(),
 
     /** Visual filter applied to the live camera preview. */
     val viewMode: ViewMode = ViewMode.NORMAL,
@@ -75,4 +83,14 @@ data class InferenceSettings(
 
     /** Matrix shadow brightness gamma in [0.5, 1.0]: lower = brighter shadows. */
     val matrixGamma: Float = 0.74f,
-)
+) {
+    /**
+     * Class IDs enabled for [modelProfileId], given that profile's class count.
+     *
+     * An absent entry means "all of this profile's classes are enabled", so a fresh
+     * profile — or one whose labels outnumber the stored IDs — is never silently
+     * blanked out.
+     */
+    fun classFilterFor(numClasses: Int): Set<Int> =
+        classFilters[modelProfileId]?.takeIf { it.isNotEmpty() } ?: (0 until numClasses).toSet()
+}

@@ -14,7 +14,9 @@ import com.yolo.detector.alerts.AlertTrigger
 import com.yolo.detector.alerts.EmailAlertService
 import com.yolo.detector.camera.CameraManager
 import com.yolo.detector.data.*
+import com.yolo.detector.inference.Detector
 import com.yolo.detector.inference.ModelAssets
+import com.yolo.detector.inference.ModelProfile
 import com.yolo.detector.inference.TfliteDetector
 import com.yolo.detector.tracking.ByteTracker
 import kotlinx.coroutines.*
@@ -48,7 +50,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ── Pipeline components ────────────────────────────────────────────────────
 
-    private var detector: TfliteDetector? = null
+    private var detector: Detector? = null
     private val tracker = ByteTracker()
 
     /** The manager currently bound to a camera lifecycle, or null if none. */
@@ -94,6 +96,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val settingsFlow: Flow<InferenceSettings> = settingsRepo.settingsFlow
 
+    /** Profiles whose asset is packaged in this build, default first. */
+    private val _availableProfiles = MutableStateFlow(emptyList<ModelProfile>())
+    val availableProfiles: StateFlow<List<ModelProfile>> = _availableProfiles.asStateFlow()
+
+    /** The profile currently loaded into the pipeline. */
+    private val _activeProfile = MutableStateFlow(ModelAssets.DEFAULT_PROFILE)
+    val activeProfile: StateFlow<ModelProfile> = _activeProfile.asStateFlow()
+
+    /** Labels of the active profile — the only valid label source for [detectionFlow]. */
+    val activeLabels: List<String> get() = _activeProfile.value.labels
+
     // ── Email-alert state ─────────────────────────────────────────────────────
 
     /** Latest persisted email-alert settings (for the Settings UI). */
@@ -131,6 +144,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var boundPreviewView: PreviewView? = null
 
     init {
+        _availableProfiles.value = ModelAssets.availableProfiles(getApplication<Application>().assets.list(""))
+
         viewModelScope.launch {
             settingsRepo.settingsFlow.collect { newSettings ->
                 val oldSettings = currentSettings
@@ -138,7 +153,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (detector == null) {
                     loadDetector(newSettings)
-                } else if (oldSettings.enableGpuDelegate != newSettings.enableGpuDelegate) {
+                } else if (oldSettings.enableGpuDelegate != newSettings.enableGpuDelegate ||
+                    oldSettings.modelProfileId != newSettings.modelProfileId
+                ) {
+                    // A different model means a different label space: class IDs from
+                    // the previous profile are meaningless under the new one, and
+                    // ByteTrack's tracks would bind detections to the wrong objects.
+                    // Drop history so the two label spaces never interleave.
+                    if (oldSettings.modelProfileId != newSettings.modelProfileId) {
+                        clearHistory()
+                    }
                     recreateDetector(newSettings)
                 } else {
                     // Update settings in-place without rebuilding TFLite interpreter or tearing down camera
@@ -234,7 +258,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (settings.enabled && key.isNotBlank() && settings.recipient.isNotBlank()) {
                     emailAttempted = true
                     val labels = trigger.detectedClassIds
-                        .map { labelFor(it) }
+                        .map { labelFor(it, activeLabels) }
                         .distinct()
                         .joinToString(", ")
                     val jpeg = EmailAlertService.frameToJpeg(frame)
@@ -372,11 +396,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
 
-        // If a camera was bound to the old pipeline and lifecycle is active, rebind
+        // If a camera was bound to the old pipeline and the view is still usable,
+        // rebind it against the new detector. The owner is nulled out on ON_DESTROY
+        // (see bindCamera), and CREATED is the first state in which CameraX can
+        // actually attach a surface, so anything below that cannot be rebound.
         val owner = boundLifecycleOwner
         val view = boundPreviewView
         if (hadManager && owner != null && view != null &&
-            owner.lifecycle.currentState.isAtLeast(Lifecycle.State.INITIALIZED)
+            owner.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED)
         ) {
             val mgr = configuredManager(settings)
             cameraManager = mgr
@@ -386,13 +413,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun loadDetector(settings: InferenceSettings): Boolean {
         val app = getApplication<Application>()
-        if (!ModelAssets.isListed(app.assets.list(""))) {
+        val profile = ModelAssets.resolveProfile(app.assets.list(""), settings.modelProfileId)
+        if (profile == null) {
             detector = null
             _pipelineError.value = app.getString(R.string.model_missing)
             return false
         }
         return try {
-            detector = TfliteDetector(app, settings)
+            detector = TfliteDetector(app, settings, profile)
+            _activeProfile.value = profile
             _pipelineError.value = null
             true
         } catch (e: FileNotFoundException) {
@@ -414,6 +443,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      * Must be called from the UI thread with a valid [LifecycleOwner].
      */
     fun bindCamera(lifecycleOwner: LifecycleOwner, previewView: PreviewView) {
+        // This ViewModel is activity-scoped, so it outlives the fragment's view (tab
+        // switches and rotations destroy the view but keep the ViewModel). Drop the
+        // stored owner/view once that view dies, otherwise a later detector rebuild
+        // would rebind the camera against a destroyed lifecycle and throw.
+        lifecycleOwner.lifecycle.addObserver(object : LifecycleEventObserver {
+            override fun onStateChanged(source: LifecycleOwner, event: Lifecycle.Event) {
+                if (event != Lifecycle.Event.ON_DESTROY) return
+                if (boundLifecycleOwner === source) {
+                    boundLifecycleOwner = null
+                    boundPreviewView = null
+                }
+                source.lifecycle.removeObserver(this)
+            }
+        })
         boundLifecycleOwner = lifecycleOwner
         boundPreviewView = previewView
 
@@ -481,7 +524,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setInferenceRateFps(v: Int)      = viewModelScope.launch { settingsRepo.setInferenceRateFps(v) }
     fun setGpuEnabled(v: Boolean)        = viewModelScope.launch { settingsRepo.setGpuEnabled(v) }
     fun setSlicedInference(v: Boolean)   = viewModelScope.launch { settingsRepo.setSlicedInference(v) }
-    fun setClassFilter(ids: Set<Int>)    = viewModelScope.launch { settingsRepo.setClassFilter(ids) }
+
+    /**
+     * Switches the active model. The pipeline is rebuilt by the settings collector,
+     * which also clears history for the label-space change.
+     */
+    fun setModelProfile(profileId: String) = viewModelScope.launch {
+        settingsRepo.setModelProfileId(profileId)
+    }
+
+    fun setClassFilter(ids: Set<Int>)    = viewModelScope.launch {
+        settingsRepo.setClassFilter(currentSettings.modelProfileId, ids)
+    }
     fun setViewMode(mode: ViewMode)      = viewModelScope.launch { settingsRepo.setViewMode(mode) }
     fun setDetectionView(view: DetectionView) = viewModelScope.launch { settingsRepo.setDetectionView(view) }
     fun setMonitoringMode(v: Boolean)      = viewModelScope.launch { settingsRepo.setMonitoringMode(v) }

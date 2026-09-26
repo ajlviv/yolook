@@ -7,6 +7,7 @@ import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import com.yolo.detector.alerts.AlertTrigger
 import com.yolo.detector.alerts.DetectionThrottler
@@ -15,7 +16,7 @@ import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.InferenceSettings
 import com.yolo.detector.inference.toRgbBitmap
 import com.yolo.detector.data.ViewMode
-import com.yolo.detector.inference.TfliteDetector
+import com.yolo.detector.inference.Detector
 import com.yolo.detector.tracking.ByteTracker
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,7 +33,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 1. Receives frames via [ImageAnalysis] with STRATEGY_KEEP_ONLY_LATEST.
  * 2. Throttles frame processing to [InferenceSettings.inferenceRateFps].
  * 3. Converts each kept frame to a Bitmap.
- * 4. Runs [TfliteDetector.detect] sequentially on a dedicated background thread.
+ * 4. Runs [Detector.detect] sequentially on a dedicated background thread.
  * 5. Runs [ByteTracker.update] on the same thread.
  * 6. Posts the result to [detectionFlow] for the ViewModel to collect.
  *
@@ -41,7 +42,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class CameraManager(
     private val context: Context,
     @Volatile var settings: InferenceSettings,
-    private val detector: TfliteDetector,
+    private val detector: Detector,
     private val tracker: ByteTracker,
 ) {
 
@@ -125,7 +126,25 @@ class CameraManager(
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
         cameraProviderFuture.addListener({
-            val provider = cameraProviderFuture.get()
+            // The provider resolves asynchronously, so the owner captured here may
+            // already be destroyed by the time this runs: the tab can be switched or
+            // the detector rebuilt while the provider is still initialising. Binding a
+            // destroyed lifecycle throws IllegalArgumentException, which would take the
+            // whole process down rather than merely leaving the camera unbound.
+            if (!lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.CREATED)) {
+                android.util.Log.w(
+                    "CameraManager",
+                    "Skipping bind: lifecycle is ${lifecycleOwner.lifecycle.currentState}",
+                )
+                return@addListener
+            }
+
+            val provider = try {
+                cameraProviderFuture.get()
+            } catch (e: Exception) {
+                _cameraError.value = "Camera init failed: ${e.message}"
+                return@addListener
+            }
             cameraProvider = provider
 
             val preview = Preview.Builder()
@@ -153,12 +172,20 @@ class CameraManager(
                 }
 
             provider.unbindAll()
-            val camera = provider.bindToLifecycle(
-                lifecycleOwner,
-                CameraSelector.DEFAULT_BACK_CAMERA,
-                preview,
-                imageAnalysis,
-            )
+            val camera = try {
+                provider.bindToLifecycle(
+                    lifecycleOwner,
+                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    preview,
+                    imageAnalysis,
+                )
+            } catch (e: IllegalArgumentException) {
+                // The view can still be torn down between the check above and this
+                // call. Losing the camera is recoverable; killing the process is not.
+                android.util.Log.w("CameraManager", "bindToLifecycle rejected", e)
+                _cameraError.value = "Camera unavailable (view closed)"
+                return@addListener
+            }
             boundCamera = camera
 
             camera.cameraInfo.cameraState.observe(lifecycleOwner) { state ->

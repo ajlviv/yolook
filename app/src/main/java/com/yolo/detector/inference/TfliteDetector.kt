@@ -11,15 +11,10 @@ import com.yolo.detector.data.InferenceSettings
 import org.tensorflow.lite.Interpreter
 import org.tensorflow.lite.gpu.CompatibilityList
 import org.tensorflow.lite.gpu.GpuDelegate
-import java.io.Closeable
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
-
-private const val INPUT_SIZE = 640
-private const val NUM_BOXES = 8400
-private const val NUM_CLASSES = 80
 
 /**
  * Overlap between neighbouring tiles of SAHI-style sliced inference, as a
@@ -28,21 +23,28 @@ private const val NUM_CLASSES = 80
  */
 private const val SLICE_OVERLAP = 0.2f
 
+/** Normalised `[left, top, right, bottom]` of the whole frame — masks from unsliced inference. */
+private val FULL_FRAME_RECT = floatArrayOf(0f, 0f, 1f, 1f)
+
 /**
- * On-device YOLOv8m detector powered by TensorFlow Lite.
+ * On-device detector powered by TensorFlow Lite.
  *
- * Loads `yolov8m.tflite` from assets and runs inference with hardware acceleration
- * (GPU delegate → NNAPI → CPU fallback).
+ * Loads the selected static model profile from assets and runs inference with
+ * hardware acceleration.
  *
- * The model outputs a raw tensor of shape `[1, 84, 8400]`:
- * - First 4 rows: cx, cy, w, h (normalised to [0, 1]).
- * - Remaining 80 rows: per-class confidence scores.
+ * Detection profiles emit a single `[1, 4 + classes, boxes]` tensor. Segmentation
+ * profiles additionally emit `[1, maskChannels, protoSize, protoSize]` mask
+ * prototypes, and their primary output carries `maskChannels` extra trailing
+ * channels holding raw per-detection mask coefficients.
  *
  * This class applies class-confidence filtering, class filter masking, and greedy NMS
  * to return a clean `List<Detection>` (trackId = -1; ByteTracker assigns real IDs).
+ * For segmentation profiles each surviving detection also gets a
+ * [com.yolo.detector.inference.SegmentationMask], computed only after NMS so the
+ * prototype matmul runs once per kept object rather than per candidate box.
  *
  * When [InferenceSettings.slicedInference] is enabled, the frame is first tiled into
- * overlapping 640×640 crops (SAHI-style, see [SliceGrid]) and each tile is run through
+ * overlapping model-sized crops (SAHI-style, see [SliceGrid]) and each tile is run through
  * the model at full input resolution; the results are fused back to frame coordinates
  * and globally NMS'd. This roughly doubles the effective resolution the detector sees,
  * which helps recall on small/distant objects at the cost of ~6× more inference work
@@ -53,32 +55,73 @@ private const val SLICE_OVERLAP = 0.2f
  */
 class TfliteDetector(
     context: Context,
-    @Volatile var settings: InferenceSettings,
-) : Closeable {
+    @Volatile override var settings: InferenceSettings,
+    override val profile: ModelProfile = ModelAssets.DEFAULT_PROFILE,
+) : Detector {
+
+    init {
+        profile.validateForCurrentUi()
+    }
 
     private val interpreter: Interpreter
     private var gpuDelegate: GpuDelegate? = null
-    private val isChannelsFirst: Boolean
-    private val isInputChannelsFirst: Boolean
-    private val numBoxes: Int
-    private val numClasses: Int
-    private val outputBuffer: ByteBuffer
-    private val outputFloatBuffer: java.nio.FloatBuffer
+    private val isChannelsFirst: Boolean = profile.outputLayout == ModelLayout.CHANNELS_FIRST
+    private val isInputChannelsFirst: Boolean = profile.inputLayout == ModelLayout.NCHW
+    private val inputSize: Int = profile.inputSize
+    private val numBoxes: Int = profile.numBoxes
+    private val numClasses: Int = profile.numClasses
+    private val isSegmentation: Boolean = profile.task == ModelTask.SEGMENTATION
+    private val primaryChannels: Int = profile.primaryChannels
+    private val maskChannels: Int = profile.maskChannels
+    private val maskChannelOffset: Int = profile.maskChannelOffset
+    private val protoSize: Int = profile.protoSize
+
+    /**
+     * Divisor applied to the box channels. Ultralytics' LiteRT export already emits
+     * `[0, 1]` coordinates (the graph contains the `_NormalizeCoords` wrapper), so this
+     * is 1 for shipped models and `inputSize` only for raw-pixel exports.
+     */
+    private val boxDivisor: Float =
+        if (profile.boxScale == BoxScale.NORMALIZED) 1f else inputSize.toFloat()
+
+    private val outputBuffers: Array<ByteBuffer>
+    private val outputFloatBuffers: Array<java.nio.FloatBuffer>
+
+    /**
+     * Output buffers keyed by their position in the interpreter's output list, which
+     * is the key `runForMultipleInputsOutputs` expects.
+     *
+     * TFLite 2.16.1 has no `runForMultipleInputsOutputs(Object[], Object[])` overload:
+     * `run(Object, Object)` wraps its second argument in a single-element array, so
+     * passing an array there makes the interpreter treat the array itself as one
+     * output buffer and fail with "cannot resolve DataType of [Ljava.lang.Object;".
+     * Preallocated to keep the map off the hot path.
+     */
+    private val outputTargets: Map<Int, Any>
+
+    /** Primary head output, and the prototype output for segmentation profiles. */
+    private val headBuffer: java.nio.FloatBuffer
+    private val protoBuffer: java.nio.FloatBuffer?
 
     // Precomputed float normalization lookup table (0..255 -> 0.0f..1.0f)
     private val normTable = FloatArray(256) { it / 255f }
 
     // Preallocated buffers to eliminate GC churn and direct ByteBuffer native memory leaks
+    private val inputPixelCount: Int = Math.multiplyExact(inputSize, inputSize)
+    private val inputFloatCount: Int = Math.multiplyExact(inputPixelCount, 3)
     private val inputBuffer: ByteBuffer = ByteBuffer
-        .allocateDirect(1 * INPUT_SIZE * INPUT_SIZE * 3 * 4)
+        .allocateDirect(Math.multiplyExact(inputFloatCount, Float.SIZE_BYTES))
         .apply { order(ByteOrder.nativeOrder()) }
     private val inputFloatBuffer: java.nio.FloatBuffer = inputBuffer.asFloatBuffer()
 
     // Reused across every inference call (incl. every slice) to avoid ~1.2M-float allocations.
-    private val inputFloatArr = FloatArray(INPUT_SIZE * INPUT_SIZE * 3)
-    private val scaledPixels = IntArray(INPUT_SIZE * INPUT_SIZE)
+    private val inputFloatArr = FloatArray(inputFloatCount)
+    private val scaledPixels = IntArray(inputPixelCount)
 
-    // Reusable 640×640 staging bitmap for SAHI-style sliced inference.
+    /** Scratch for one detection's mask coefficients; reused across the frame. */
+    private val maskCoefficients = FloatArray(if (isSegmentation) maskChannels else 0)
+
+    /** Reusable model-sized staging bitmap for SAHI-style sliced inference. */
     private var tileBitmap: Bitmap? = null
     private var tileCanvas: Canvas? = null
     private val tilePaint = Paint().apply { isFilterBitmap = true }
@@ -87,39 +130,92 @@ class TfliteDetector(
     private val tilesCacheKey = intArrayOf(0, 0)
     private var cachedTiles: List<SliceGrid.Tile> = emptyList()
 
+    /** Which delegates/threads the interpreter was actually built with, for the init log. */
+    private var delegateDescription: String = "unknown"
+
     init {
         val model = loadModelFile(context)
-        val options = buildInterpreterOptions()
-        interpreter = Interpreter(model, options)
+        val options = try {
+            buildInterpreterOptions()
+        } catch (e: Throwable) {
+            closeGpuDelegate()
+            throw e
+        }
+        val createdInterpreter = try {
+            Interpreter(model, options)
+        } catch (e: Throwable) {
+            closeGpuDelegate()
+            throw e
+        }
+        interpreter = createdInterpreter
 
-        val inputTensor = interpreter.getInputTensor(0)
-        val inShape = inputTensor.shape()
-        isInputChannelsFirst = (inShape.size >= 4 && inShape[1] == 3)
+        try {
+            val inputSignature = (0 until createdInterpreter.getInputTensorCount()).map { index ->
+                val tensor = createdInterpreter.getInputTensor(index)
+                    ?: throw ModelContractException("Input tensor $index is missing")
+                TensorSignature(
+                    name = tensor.name(),
+                    shape = tensor.shape().toList(),
+                    dataType = tensorDataType(tensor.dataType()),
+                )
+            }
+            val outputSignature = (0 until createdInterpreter.getOutputTensorCount()).map { index ->
+                val tensor = createdInterpreter.getOutputTensor(index)
+                    ?: throw ModelContractException("Output tensor $index is missing")
+                TensorSignature(
+                    name = tensor.name(),
+                    shape = tensor.shape().toList(),
+                    dataType = tensorDataType(tensor.dataType()),
+                )
+            }
+            profile.validateSignature(ModelSignature(inputSignature, outputSignature))
 
-        val outputTensor = interpreter.getOutputTensor(0)
-        val shape = outputTensor.shape()
-        // shape is either [1, 84, 8400] (channels first) or [1, 8400, 84] (channels last)
-        isChannelsFirst = (shape.size >= 3 && shape[1] <= 100 && shape[2] > 100)
-        numBoxes = if (isChannelsFirst) shape[2] else shape[1]
-        numClasses = (if (isChannelsFirst) shape[1] else shape[2]) - 4
+            outputBuffers = Array(outputSignature.size) { index ->
+                val tensor = createdInterpreter.getOutputTensor(index)
+                    ?: throw ModelContractException("Output tensor $index is missing")
+                ByteBuffer
+                    .allocateDirect(Math.multiplyExact(tensor.numElements(), Float.SIZE_BYTES))
+                    .apply { order(ByteOrder.nativeOrder()) }
+            }
+            outputFloatBuffers = Array(outputBuffers.size) { outputBuffers[it].asFloatBuffer() }
+            // Keyed positionally, matching the getOutputTensor(index) order the
+            // buffers above were sized from.
+            outputTargets = HashMap<Int, Any>(outputBuffers.size * 2).apply {
+                for (index in outputBuffers.indices) put(index, outputBuffers[index])
+            }
 
-        outputBuffer = ByteBuffer
-            .allocateDirect(outputTensor.numElements() * 4)
-            .apply { order(ByteOrder.nativeOrder()) }
-        outputFloatBuffer = outputBuffer.asFloatBuffer()
+            headBuffer = outputFloatBuffers[0]
+            protoBuffer = if (isSegmentation) outputFloatBuffers[1] else null
 
-        android.util.Log.i("TfliteDetector", "Model initialized. InShape=${inShape.joinToString()}, OutShape=${shape.joinToString()}, isInputCF=$isInputChannelsFirst, isOutCF=$isChannelsFirst, boxes=$numBoxes, classes=$numClasses")
+            android.util.Log.i(
+                "TfliteDetector",
+                "Model initialized. Profile=${profile.id}, task=${profile.task}, " +
+                    "InShape=${profile.expectedInputShape}, OutShapes=${profile.expectedOutputShapes}, " +
+                "isInputCF=$isInputChannelsFirst, isOutCF=$isChannelsFirst, " +
+                "boxes=$numBoxes, classes=$numClasses, maskChannels=$maskChannels, " +
+                "outTensors=${outputSignature.map { it.name }}, delegate=$delegateDescription",
+            )
+        } catch (e: Throwable) {
+            runCatching { createdInterpreter.close() }
+                .onFailure { closeError -> android.util.Log.w("TfliteDetector", "Error closing interpreter", closeError) }
+            closeGpuDelegate()
+            throw e
+        }
     }
 
     // ── Initialisation ────────────────────────────────────────────────────────
 
     private fun loadModelFile(context: Context): MappedByteBuffer {
-        val assetFd = context.assets.openFd(ModelAssets.FILE_NAME)
-        return assetFd.createInputStream().channel.map(
-            FileChannel.MapMode.READ_ONLY,
-            assetFd.startOffset,
-            assetFd.declaredLength,
-        )
+        val assetFd = context.assets.openFd(profile.assetName)
+        return assetFd.use { descriptor ->
+            descriptor.createInputStream().use { input ->
+                input.channel.map(
+                    FileChannel.MapMode.READ_ONLY,
+                    descriptor.startOffset,
+                    descriptor.declaredLength,
+                )
+            }
+        }
     }
 
     private fun buildInterpreterOptions(): Interpreter.Options {
@@ -129,8 +225,13 @@ class TfliteDetector(
                 val compatList = CompatibilityList()
                 if (compatList.isDelegateSupportedOnThisDevice) {
                     val delegate = GpuDelegate()
-                    gpuDelegate = delegate
-                    options.addDelegate(delegate)
+                    try {
+                        options.addDelegate(delegate)
+                        gpuDelegate = delegate
+                    } catch (e: Exception) {
+                        delegate.close()
+                        throw e
+                    }
                 }
             } catch (e: Exception) {
                 android.util.Log.w("TfliteDetector", "Failed to init GPU delegate, fallback to CPU", e)
@@ -138,7 +239,17 @@ class TfliteDetector(
             }
         }
         val availableCores = Runtime.getRuntime().availableProcessors()
-        options.setNumThreads(availableCores.coerceIn(4, 8))
+        val threads = availableCores.coerceIn(4, 8)
+        options.setNumThreads(threads)
+        // Without this the interpreter runs the reference kernels, which is tolerable
+        // for yolo11n but leaves a segmentation model an order of magnitude slower than
+        // the hardware allows. XNNPACK only covers the ops a delegate did not claim, so
+        // it composes with the GPU delegate above.
+        options.setUseXNNPACK(true)
+        delegateDescription = buildString {
+            append(if (gpuDelegate != null) "gpu" else "cpu")
+            append("+xnnpack threads=").append(threads)
+        }
         return options
     }
 
@@ -147,29 +258,29 @@ class TfliteDetector(
     /**
      * Runs inference on [bitmap] and returns filtered, NMS-deduplicated detections.
      *
-     * @param bitmap Source frame. Will be scaled to 640×640 internally (or, when
-     *        [InferenceSettings.slicedInference] is on, tiled into 640×640 crops
+     * @param bitmap Source frame. Will be scaled to model-sized internally (or, when
+     *        [InferenceSettings.slicedInference] is on, tiled into model-sized crops
      *        that are fused back to frame coordinates).
      * @return List of [Detection] with trackId = -1 (untracked).
      */
-    fun detect(bitmap: Bitmap): List<Detection> {
+    override fun detect(bitmap: Bitmap): List<Detection> {
         val timestampMs = System.currentTimeMillis()
         if (settings.slicedInference) {
             return detectSliced(bitmap, timestampMs)
         }
 
-        val scaled = if (bitmap.width == INPUT_SIZE && bitmap.height == INPUT_SIZE) {
+        val scaled = if (bitmap.width == inputSize && bitmap.height == inputSize) {
             bitmap
         } else {
-            Bitmap.createScaledBitmap(bitmap, INPUT_SIZE, INPUT_SIZE, false)
+            Bitmap.createScaledBitmap(bitmap, inputSize, inputSize, false)
         }
 
-        scaled.getPixels(scaledPixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+        scaled.getPixels(scaledPixels, 0, inputSize, 0, 0, inputSize, inputSize)
         if (scaled !== bitmap) {
             scaled.recycle()
         }
 
-        return runOnInput(timestampMs).take(settings.maxObjects)
+        return runOnInput(timestampMs, FULL_FRAME_RECT)
     }
 
     /**
@@ -182,7 +293,7 @@ class TfliteDetector(
         val srcH = bitmap.height
 
         if (srcW != tilesCacheKey[0] || srcH != tilesCacheKey[1]) {
-            cachedTiles = SliceGrid.compute(srcW, srcH, INPUT_SIZE, SLICE_OVERLAP)
+            cachedTiles = SliceGrid.compute(srcW, srcH, inputSize, SLICE_OVERLAP)
             tilesCacheKey[0] = srcW
             tilesCacheKey[1] = srcH
         }
@@ -191,7 +302,15 @@ class TfliteDetector(
         val all = ArrayList<Detection>(32 * cachedTiles.size)
         for (tile in cachedTiles) {
             drawTile(bitmap, canvas, tile)
-            for (detection in runOnInput(timestampMs)) {
+            // A tile's mask covers the tile's own region of the frame, so it carries
+            // that region as its normalised rect rather than the whole frame.
+            val tileRect = floatArrayOf(
+                tile.left / srcW.toFloat(),
+                tile.top / srcH.toFloat(),
+                tile.right / srcW.toFloat(),
+                tile.bottom / srcH.toFloat(),
+            )
+            for (detection in runOnInput(timestampMs, tileRect)) {
                 val bbox = detection.bbox
                 val mapped = SliceGrid.mapToFrame(
                     tile, srcW, srcH,
@@ -208,31 +327,34 @@ class TfliteDetector(
 
     private fun ensureTileCanvas(): Canvas =
         tileCanvas ?: run {
-            val bmp = Bitmap.createBitmap(INPUT_SIZE, INPUT_SIZE, Bitmap.Config.ARGB_8888)
+            val bmp = Bitmap.createBitmap(inputSize, inputSize, Bitmap.Config.ARGB_8888)
             tileBitmap = bmp
             Canvas(bmp).also { tileCanvas = it }
         }
 
-    /** Draws [tile] of [source] into the reusable 640×640 tile bitmap and reads its pixels. */
+    /** Draws [tile] of [source] into the reusable model-sized tile bitmap and reads its pixels. */
     private fun drawTile(source: Bitmap, canvas: Canvas, tile: SliceGrid.Tile) {
         val srcRect = Rect(tile.left, tile.top, tile.right, tile.bottom)
-        val dstRect = RectF(0f, 0f, INPUT_SIZE.toFloat(), INPUT_SIZE.toFloat())
+        val dstRect = RectF(0f, 0f, inputSize.toFloat(), inputSize.toFloat())
         canvas.drawBitmap(source, srcRect, dstRect, tilePaint)
-        tileBitmap!!.getPixels(scaledPixels, 0, INPUT_SIZE, 0, 0, INPUT_SIZE, INPUT_SIZE)
+        tileBitmap!!.getPixels(scaledPixels, 0, inputSize, 0, 0, inputSize, inputSize)
     }
 
     /**
-     * Converts [scaledPixels] (a 640×640 frame in ARGB ints, either the full frame
+     * Converts [scaledPixels] (a model-sized frame in ARGB ints, either the full frame
      * or one slice) into the input buffer, runs the interpreter, and parses the raw
      * output tensor into filtered, NMS-deduplicated detections.
+     *
+     * @param maskRect Normalised frame rect `[left, top, right, bottom]` that the input
+     *        covers, recorded on any mask this pass produces.
      */
-    private fun runOnInput(timestampMs: Long): List<Detection> {
+    private fun runOnInput(timestampMs: Long, maskRect: FloatArray): List<Detection> {
         inputFloatBuffer.rewind()
         val norm = normTable
         val floatArr = inputFloatArr
         if (isInputChannelsFirst) {
             // NCHW format: RRR... GGG... BBB...
-            val planeSize = INPUT_SIZE * INPUT_SIZE
+            val planeSize = inputPixelCount
             for (i in 0 until planeSize) {
                 val pixel = scaledPixels[i]
                 floatArr[i] = norm[(pixel shr 16) and 0xFF]
@@ -251,73 +373,211 @@ class TfliteDetector(
         inputFloatBuffer.put(floatArr)
         inputBuffer.rewind()
 
-        outputBuffer.rewind()
-        interpreter.run(inputBuffer, outputBuffer)
-        outputFloatBuffer.rewind()
+        for (buffer in outputBuffers) buffer.rewind()
+        val inferStart = System.nanoTime()
+        // Must be the multi-I/O entry point: run(Object, Object) wraps its second
+        // argument as new Object[]{ outputs }, so passing an Array<Any> there makes
+        // TFLite see a single output whose target is an Object[] and fail with
+        // "cannot resolve DataType of [Ljava.lang.Object;". Here the array *is* the
+        // output list, which is also what makes the second segment prototype tensor
+        // reachable. Correct for one output as well as two.
+        interpreter.runForMultipleInputsOutputs(arrayOf<Any>(inputBuffer), outputTargets)
+        for (buffer in outputFloatBuffers) buffer.rewind()
+        lastInferenceMs = (System.nanoTime() - inferStart) / 1_000_000L
 
-        return parseOutput(timestampMs)
+        val kept = parseCandidates(timestampMs)
+            .sortedByDescending { it.detection.confidence }
+            .take(settings.maxObjects)
+
+        logFrameDiagnostics()
+
+        return if (isSegmentation) attachMasks(kept, maskRect) else kept.map { it.detection }
     }
+
+    /**
+     * Membership test for the active class filter, rebuilt per pass.
+     *
+     * The candidate loop visits every class so it can report a global maximum, so
+     * filter membership has to be an O(1) lookup rather than a set probe per score.
+     */
+    private val inFilter = BooleanArray(256)
+
+    /**
+     * Per-frame candidate accounting is only worth its cost while diagnosing, and
+     * must never reach a release build. Keyed off the OS debuggable flag rather than
+     * a new `InferenceSettings` field so there is no user-facing switch to get wrong.
+     */
+    private val diagnosticsEnabled: Boolean =
+        (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    /** Per-frame counters, reset each pass; summarised by [logFrameDiagnostics]. */
+    private var diagGlobalMax = 0f
+    private var diagPostBoxMax = 0f
+    private var diagTopChannel = -1
+    private var diagInFilterMax = 0f
+    private var diagAboveThreshold = 0
+    private var diagInFilter = 0
+    private var diagKept = 0
+    private var diagFilterSize = 0
+
+    /**
+     * One line per pass describing where candidates were lost, to separate the
+     * failure modes that all look like "no detections" on screen.
+     *
+     * `classMax` is the highest score in the channels the profile treats as class
+     * scores, and `postBoxMax`/`topCh` the highest over every channel after the box
+     * channels together with the channel it came from. So: a low `classMax` with a
+     * high `postBoxMax` at a channel beyond the class range means the head is laid
+     * out mask-first and the offsets are wrong, while both being low means the model
+     * genuinely saw nothing. `inFilter` is the highest score among the classes the
+     * filter allows, so `inFilterMax` at zero with a high `classMax` means the active
+     * class filter is what rejected everything.
+     */
+    private fun logFrameDiagnostics() {
+        if (!diagnosticsEnabled) return
+        // Built first, then formatted once: applying .format to one literal of a `+`
+        // chain binds tighter than the concatenation and silently leaves the other
+        // specifiers unformatted.
+        val line = "diag profile=%s filter=%d above=%d inFilter=%d kept=%d " +
+            "classMax=%.4f postBoxMax=%.4f topCh=%d inFilterMax=%.4f inferMs=%d"
+        android.util.Log.i(
+            "TfliteDetector",
+            line.format(
+                java.util.Locale.US,
+                profile.id,
+                diagFilterSize,
+                diagAboveThreshold,
+                diagInFilter,
+                diagKept,
+                diagGlobalMax,
+                diagPostBoxMax,
+                diagTopChannel,
+                diagInFilterMax,
+                lastInferenceMs,
+            ),
+        )
+        diagAboveThreshold = 0
+        diagInFilter = 0
+        diagGlobalMax = 0f
+        diagPostBoxMax = 0f
+        diagTopChannel = -1
+        diagInFilterMax = 0f
+    }
+
+    /** Wall time of the most recent [runOnInput] call, for the diagnostic line. */
+    private var lastInferenceMs = 0L
 
     // ── Output parsing ────────────────────────────────────────────────────────
 
-    private fun parseOutput(timestampMs: Long): List<Detection> {
-        val candidates = ArrayList<Detection>(64)
+    /**
+     * A scored box plus the column it came from in the head output.
+     *
+     * The column index has to survive filtering and NMS because the mask
+     * coefficients for a segmentation detection live in that same column, and the
+     * clamped bbox is no longer enough to identify it.
+     */
+    private class Candidate(val detection: Detection, val boxIndex: Int)
+
+    /**
+     * Scans the head output for boxes above the confidence threshold and applies the
+     * class filter. No masks and no NMS here — see [runOnInput].
+     */
+    private fun parseCandidates(timestampMs: Long): List<Candidate> {
+        val candidates = ArrayList<Candidate>(64)
         val confThreshold = settings.confidenceThreshold
-        val activeFilter = settings.classFilter.toIntArray()
         val totalBoxes = numBoxes
         val totalClasses = numClasses
+        val activeFilter = settings.classFilterFor(totalClasses).toIntArray()
+        val rowStride = primaryChannels
+        // Channels after the 4 box channels: class scores followed by mask
+        // coefficients, per the profile's maskChannelOffset.
+        val postBoxChannels = primaryChannels - 4
+        // Only the diagnostics need the mask-coefficient channels scanned; for
+        // yoloe that is 35 channels instead of 3 across 8400 boxes. Restricted to
+        // debug builds so release inference only walks the class channels.
+        val scanChannels = if (diagnosticsEnabled) postBoxChannels else totalClasses
+        diagFilterSize = activeFilter.size
+        java.util.Arrays.fill(inFilter, false)
+        for (cls in activeFilter) {
+            if (cls in 0 until totalClasses && cls < inFilter.size) inFilter[cls] = true
+        }
 
         for (boxIdx in 0 until totalBoxes) {
-            // Find best class first before doing coordinate math
+            // One pass over every post-box channel. `classMax` covers the channels the
+            // profile claims are class scores; `postBoxMax` covers all of them including
+            // the mask coefficients, and records which channel it came from. If the class
+            // range reads near zero while a later channel is high, the head is laid out
+            // mask-first rather than class-first and the offsets are wrong.
             var bestClassId = -1
             var bestScore = confThreshold
+            var classMax = 0f
+            var postBoxMax = 0f
+            var postBoxChannel = -1
 
             if (isChannelsFirst) {
-                for (cls in activeFilter) {
-                    if (cls >= totalClasses) continue
-                    val score = outputFloatBuffer.get((4 + cls) * totalBoxes + boxIdx)
+                for (k in 0 until scanChannels) {
+                    val score = headBuffer.get((4 + k) * totalBoxes + boxIdx)
+                    if (score > postBoxMax) {
+                        postBoxMax = score
+                        postBoxChannel = 4 + k
+                    }
+                    if (k >= totalClasses) continue
+                    if (score > classMax) classMax = score
+                    if (!inFilter[k]) continue
                     if (score > bestScore) {
                         bestScore = score
-                        bestClassId = cls
+                        bestClassId = k
                     }
                 }
             } else {
-                val boxOffset = boxIdx * (totalClasses + 4)
-                for (cls in activeFilter) {
-                    if (cls >= totalClasses) continue
-                    val score = outputFloatBuffer.get(boxOffset + 4 + cls)
+                val boxOffset = boxIdx * rowStride
+                for (k in 0 until scanChannels) {
+                    val score = headBuffer.get(boxOffset + 4 + k)
+                    if (score > postBoxMax) {
+                        postBoxMax = score
+                        postBoxChannel = 4 + k
+                    }
+                    if (k >= totalClasses) continue
+                    if (score > classMax) classMax = score
+                    if (!inFilter[k]) continue
                     if (score > bestScore) {
                         bestScore = score
-                        bestClassId = cls
+                        bestClassId = k
                     }
                 }
             }
 
+            if (classMax > diagGlobalMax) {
+                diagGlobalMax = classMax
+                diagTopChannel = postBoxChannel
+                diagPostBoxMax = postBoxMax
+            }
+            if (classMax > confThreshold) diagAboveThreshold++
             if (bestClassId == -1) continue
+            diagInFilter++
+            if (bestScore > diagInFilterMax) diagInFilterMax = bestScore
 
             val cx: Float
             val cy: Float
             val w: Float
             val h: Float
             if (isChannelsFirst) {
-                cx = outputFloatBuffer.get(0 * totalBoxes + boxIdx)
-                cy = outputFloatBuffer.get(1 * totalBoxes + boxIdx)
-                w  = outputFloatBuffer.get(2 * totalBoxes + boxIdx)
-                h  = outputFloatBuffer.get(3 * totalBoxes + boxIdx)
+                cx = headBuffer.get(0 * totalBoxes + boxIdx)
+                cy = headBuffer.get(1 * totalBoxes + boxIdx)
+                w  = headBuffer.get(2 * totalBoxes + boxIdx)
+                h  = headBuffer.get(3 * totalBoxes + boxIdx)
             } else {
-                val boxOffset = boxIdx * (totalClasses + 4)
-                cx = outputFloatBuffer.get(boxOffset + 0)
-                cy = outputFloatBuffer.get(boxOffset + 1)
-                w  = outputFloatBuffer.get(boxOffset + 2)
-                h  = outputFloatBuffer.get(boxOffset + 3)
+                val boxOffset = boxIdx * rowStride
+                cx = headBuffer.get(boxOffset + 0)
+                cy = headBuffer.get(boxOffset + 1)
+                w  = headBuffer.get(boxOffset + 2)
+                h  = headBuffer.get(boxOffset + 3)
             }
 
-            // Auto-detect whether output box coordinates are normalized [0, 1] or raw pixels [0, 640]
-            val scale = if (cx > 1.5f || cy > 1.5f || w > 1.5f || h > 1.5f) INPUT_SIZE.toFloat() else 1.0f
-            val halfW = (w / 2f) / scale
-            val halfH = (h / 2f) / scale
-            val normCx = cx / scale
-            val normCy = cy / scale
+            val halfW = (w / 2f) / boxDivisor
+            val halfH = (h / 2f) / boxDivisor
+            val normCx = cx / boxDivisor
+            val normCy = cy / boxDivisor
 
             val left   = (normCx - halfW).coerceIn(0f, 1f)
             val top    = (normCy - halfH).coerceIn(0f, 1f)
@@ -325,20 +585,70 @@ class TfliteDetector(
             val bottom = (normCy + halfH).coerceIn(0f, 1f)
 
             candidates.add(
-                Detection(
-                    trackId = -1,
-                    classId = bestClassId,
-                    confidence = bestScore,
-                    bbox = RectF(left, top, right, bottom),
-                    timestampMs = timestampMs,
+                Candidate(
+                    detection = Detection(
+                        trackId = -1,
+                        classId = bestClassId,
+                        confidence = bestScore,
+                        bbox = RectF(left, top, right, bottom),
+                        timestampMs = timestampMs,
+                    ),
+                    boxIndex = boxIdx,
                 )
             )
         }
 
-        // NOTE: no `take(maxObjects)` here — callers apply the global cap, and the
-        // sliced path must see every tile's survivors before fused NMS.
-        return applyNms(candidates).sortedByDescending { it.confidence }
+        return applyNms(candidates).also { diagKept = it.size }
     }
+
+    /**
+     * Builds an instance mask for each surviving detection from the raw mask
+     * coefficients in the head output and the prototype output.
+     *
+     * Runs only on post-NMS, post-cap survivors: the prototype matmul is
+     * `maskChannels * protoSize²` per detection, which is wasted work for the hundreds
+     * of candidates NMS is about to discard.
+     *
+     * @param maskRect Normalised frame rect `[left, top, right, bottom]` the mask's
+     *        prototype grid covers — the whole frame, or one slice's region.
+     */
+    private fun attachMasks(candidates: List<Candidate>, maskRect: FloatArray): List<Detection> {
+        val protos = protoBuffer ?: return candidates.map { it.detection }
+        if (candidates.isEmpty()) return emptyList()
+
+        return candidates.map { candidate ->
+            val detection = candidate.detection
+            val bbox = detection.bbox
+            // Mask coefficients are the trailing channels of the head output, in the
+            // column this candidate came from. The bbox was already clamped into the
+            // frame, which is the same normalised space the prototypes cover, so the
+            // box needs no further scaling.
+            for (c in 0 until maskChannels) {
+                maskCoefficients[c] = if (isChannelsFirst) {
+                    headBuffer.get((maskChannelOffset + c) * numBoxes + candidate.boxIndex)
+                } else {
+                    headBuffer.get(candidate.boxIndex * primaryChannels + maskChannelOffset + c)
+                }
+            }
+            val mask = SegmentationDecoder.buildMask(
+                coefficients = maskCoefficients,
+                prototypes = protos,
+                channels = maskChannels,
+                protoWidth = protoSize,
+                protoHeight = protoSize,
+                boxLeft = bbox.left,
+                boxTop = bbox.top,
+                boxRight = bbox.right,
+                boxBottom = bbox.bottom,
+                rectLeft = maskRect[0],
+                rectTop = maskRect[1],
+                rectRight = maskRect[2],
+                rectBottom = maskRect[3],
+            )
+            if (mask.isEmpty()) detection else detection.copy(mask = mask)
+        }
+    }
+
 
     // ── NMS ───────────────────────────────────────────────────────────────────
 
@@ -348,12 +658,12 @@ class TfliteDetector(
      * Within each class, suppresses lower-confidence boxes whose IoU with a
      * higher-confidence box exceeds [InferenceSettings.iouThreshold].
      */
-    private fun applyNms(detections: List<Detection>): List<Detection> {
-        val result = mutableListOf<Detection>()
-        val byClass = detections.groupBy { it.classId }
+    private fun applyNms(candidates: List<Candidate>): List<Candidate> {
+        val result = mutableListOf<Candidate>()
+        val byClass = candidates.groupBy { it.detection.classId }
 
         for ((_, group) in byClass) {
-            val sorted = group.sortedByDescending { it.confidence }.toMutableList()
+            val sorted = group.sortedByDescending { it.detection.confidence }
             val keep = BooleanArray(sorted.size) { true }
 
             for (i in sorted.indices) {
@@ -361,7 +671,7 @@ class TfliteDetector(
                 result.add(sorted[i])
                 for (j in i + 1 until sorted.size) {
                     if (!keep[j]) continue
-                    if (iou(sorted[i].bbox, sorted[j].bbox) > settings.iouThreshold) {
+                    if (iou(sorted[i].detection.bbox, sorted[j].detection.bbox) > settings.iouThreshold) {
                         keep[j] = false
                     }
                 }
@@ -411,18 +721,22 @@ class TfliteDetector(
 
     // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-    override fun close() {
-        try {
-            interpreter.close()
-        } catch (e: Exception) {
-            android.util.Log.w("TfliteDetector", "Error closing interpreter", e)
-        }
+    private fun closeGpuDelegate() {
         try {
             gpuDelegate?.close()
         } catch (e: Exception) {
             android.util.Log.w("TfliteDetector", "Error closing GPU delegate", e)
         }
         gpuDelegate = null
+    }
+
+    override fun close() {
+        try {
+            interpreter.close()
+        } catch (e: Exception) {
+            android.util.Log.w("TfliteDetector", "Error closing interpreter", e)
+        }
+        closeGpuDelegate()
 
         tileBitmap?.takeIf { !it.isRecycled }?.recycle()
         tileBitmap = null

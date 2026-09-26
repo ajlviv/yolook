@@ -15,6 +15,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.yolo.detector.R
 import com.yolo.detector.data.HistoryEntry
 import com.yolo.detector.data.HistoryItem
+import com.yolo.detector.inference.ModelProfile
 import com.yolo.detector.data.labelFor
 import com.yolo.detector.databinding.FragmentHistoryBinding
 import com.yolo.detector.ui.MainViewModel
@@ -57,10 +58,17 @@ class HistoryFragment : Fragment() {
 
         viewLifecycleOwner.lifecycleScope.launch {
             viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                viewModel.historyFlow.collect { list ->
-                    adapter.submitList(list)
-                    binding.tvEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
-                    binding.recyclerView.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
+                launch {
+                    viewModel.historyFlow.collect { list ->
+                        adapter.submitList(list)
+                        binding.tvEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
+                        binding.recyclerView.visibility = if (list.isEmpty()) View.GONE else View.VISIBLE
+                    }
+                }
+                // History class IDs are only meaningful under the model that produced
+                // them, so the labels are re-supplied whenever the model changes.
+                launch {
+                    viewModel.activeProfile.collect { adapter.submitLabels(it.labels) }
                 }
             }
         }
@@ -73,7 +81,13 @@ class HistoryFragment : Fragment() {
 
     private class HistoryAdapter : RecyclerView.Adapter<HistoryAdapter.ViewHolder>() {
         private var items = listOf<HistoryItem>()
+        private var labels: List<String> = emptyList()
         private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+
+        fun submitLabels(newLabels: List<String>) {
+            labels = newLabels
+            notifyItemRangeChanged(0, items.size)
+        }
 
         fun submitList(newItems: List<HistoryItem>) {
             items = newItems
@@ -104,7 +118,7 @@ class HistoryFragment : Fragment() {
         }
 
         private fun bindDetection(holder: ViewHolder, item: HistoryEntry) {
-            val label = labelFor(item.classId)
+            val label = labelFor(item.classId, labels)
             val track = if (item.trackId >= 0) "#${item.trackId}" else "?"
             val best = "${(item.bestConfidence * 100).toInt()}%"
             holder.tvTitle.text = "$label $track · seen ${item.count}×"
@@ -113,7 +127,7 @@ class HistoryFragment : Fragment() {
 
         private fun bindAlert(holder: ViewHolder, item: HistoryItem.Alert) {
             val labels = item.classIds
-                .map { labelFor(it) }
+                .map { labelFor(it, labels) }
                 .distinct()
                 .joinToString(", ")
             val res = holder.itemView.context.resources

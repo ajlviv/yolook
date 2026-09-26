@@ -9,6 +9,7 @@ import com.yolo.detector.data.Detection
 import com.yolo.detector.data.DetectionView
 import com.yolo.detector.data.VEHICLE_CLASS_IDS
 import com.yolo.detector.data.labelFor
+import com.yolo.detector.inference.SegmentationMask
 
 /**
  * Transparent overlay [View] that draws YOLO bounding boxes on top of the camera preview.
@@ -73,7 +74,122 @@ class BoundingBoxOverlay @JvmOverloads constructor(
         typeface = Typeface.DEFAULT_BOLD
     }
 
+    /**
+     * Instance masks are drawn as a translucent tint of the class colour. A mask is
+     * stored at the model's prototype resolution (160×160 for the shipped YOLOE
+     * export) and stretched to its normalised frame rect, so the fill is
+     * deliberately soft — the box outline and label stay the precise reference.
+     */
+    private val maskPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+
+    /** Alpha of the mask tint; low enough that the preview stays readable underneath. */
+    private val maskAlpha = 110
+
+    /**
+     * ARGB staging row-buffer for [rebuildMaskLayer]. Sized to the largest mask seen;
+     * the prototype resolution is fixed per model, so this is allocated once.
+     */
+    private var maskPixels: IntArray = IntArray(0)
+
+    /**
+     * One mask's pixels, paired with the class colour it is tinted in. Built in
+     * [setDetections], not in onDraw.
+     */
+    private var pendingMasks: List<Pair<SegmentationMask, Int>> = emptyList()
+
+    private fun ensureMaskBuffer(count: Int) {
+        if (maskPixels.size < count) maskPixels = IntArray(count)
+    }
+
+    private val maskDst = RectF()
+
+    /**
+     * Mask tints, recorded per frame in [rebuildMaskLayer] and replayed by [onDraw].
+     *
+     * Mask rasterising allocates a prototype-sized buffer per detection, so doing it
+     * inside onDraw would churn the heap (and trip lint) on every frame. Recording
+     * happens once per new [detections] snapshot instead, and the bitmaps come from a
+     * pool that is reused across frames.
+     */
+    private data class MaskTint(
+        val bitmap: Bitmap,
+        val left: Float,
+        val top: Float,
+        val right: Float,
+        val bottom: Float,
+    )
+
+    private var maskTints: List<MaskTint> = emptyList()
+
+    /** Reusable raster targets, one per concurrently drawn mask. */
+    private val maskPool = ArrayList<Bitmap>()
+
+    /**
+     * Rasterises `masks` (paired with their class colour) into [maskTints] for the
+     * current view geometry, recycling pool bitmaps the frame no longer needs.
+     */
+    private fun rebuildMaskLayer(
+        masks: List<Pair<SegmentationMask, Int>>,
+        content: OverlayGeometry.ContentRect?,
+    ) {
+        if (masks.isEmpty()) {
+            maskTints = emptyList()
+            return
+        }
+
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val offsetX = content?.left ?: 0f
+        val offsetY = content?.top ?: 0f
+        val contentW = content?.width ?: w
+        val contentH = content?.height ?: h
+
+        // Grow the pool to the number of masks actually on screen.
+        while (maskPool.size < masks.size) {
+            val first = masks[maskPool.size].first
+            maskPool.add(
+                Bitmap.createBitmap(first.width, first.height, Bitmap.Config.ARGB_8888)
+            )
+        }
+
+        val tints = ArrayList<MaskTint>(masks.size)
+        for (i in masks.indices) {
+            val (mask, color) = masks[i]
+            val bitmap = maskPool[i]
+            val bits = mask.rawBits()
+            val tint = (color and 0x00FFFFFF) or (maskAlpha shl 24)
+            for (p in bits.indices) {
+                maskPixels[p] = if (bits[p]) tint else 0
+            }
+            bitmap.setPixels(maskPixels, 0, mask.width, 0, 0, mask.width, mask.height)
+
+            tints.add(
+                MaskTint(
+                    bitmap = bitmap,
+                    left = offsetX + mask.left * contentW,
+                    top = offsetY + mask.top * contentH,
+                    right = offsetX + mask.right * contentW,
+                    bottom = offsetY + mask.bottom * contentH,
+                )
+            )
+        }
+        maskTints = tints
+    }
+
     private var detections: List<Detection> = emptyList()
+
+    /**
+     * Label vocabulary of the model that produced [detections]. Class IDs are only
+     * meaningful within one model's label space, so the overlay is told which list
+     * to index instead of assuming COCO.
+     */
+    var labels: List<String> = COCO_LABELS
+        set(value) {
+            if (field != value) {
+                field = value
+                postInvalidate()
+            }
+        }
 
     /**
      * Aspect ratio (width/height) of the frame the detections are normalised to
@@ -120,6 +236,13 @@ class BoundingBoxOverlay @JvmOverloads constructor(
     /** Updates the overlay with a new frame's detections and triggers a redraw. */
     fun setDetections(dets: List<Detection>) {
         detections = dets
+        // Collected here so the rasterising can happen in onDraw's size context
+        // without re-walking the detections.
+        pendingMasks = dets.mapNotNull { det ->
+            val mask = det.mask ?: return@mapNotNull null
+            if (mask.isEmpty()) null else mask to getColorForClass(det.classId)
+        }
+        ensureMaskBuffer(pendingMasks.maxOfOrNull { it.first.width * it.first.height } ?: 0)
         postInvalidate()
     }
 
@@ -144,6 +267,13 @@ class BoundingBoxOverlay @JvmOverloads constructor(
 
         canvas.save()
         canvas.clipRect(0f, 0f, w, h)
+
+        // Masks first, so box outlines and labels stay crisp on top of the tint.
+        rebuildMaskLayer(pendingMasks, content)
+        for (tint in maskTints) {
+            maskDst.set(tint.left, tint.top, tint.right, tint.bottom)
+            canvas.drawBitmap(tint.bitmap, null, maskDst, maskPaint)
+        }
 
         for ((index, det) in detections.withIndex()) {
             val color = getColorForClass(det.classId)
@@ -190,10 +320,19 @@ class BoundingBoxOverlay @JvmOverloads constructor(
     }
 
     private fun buildLabel(det: Detection): String {
-        val cls = labelFor(det.classId).take(8)
+        val cls = labelFor(det.classId, labels).take(8)
         val id = if (det.trackId >= 0) "#${det.trackId}" else "?"
         val conf = (det.confidence * 100).toInt()
         return "$cls $id ${conf}%"
+    }
+
+    override fun onDetachedFromWindow() {
+        super.onDetachedFromWindow()
+        for (bitmap in maskPool) {
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }
+        maskPool.clear()
+        maskTints = emptyList()
     }
 
     /**
